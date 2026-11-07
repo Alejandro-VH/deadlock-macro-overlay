@@ -13,14 +13,15 @@ use std::time::Duration;
 use windows::core::w;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetSystemMetrics, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN,
-    SM_CYSCREEN, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    FindWindowW, GetSystemMetrics, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
+    SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
 const WINDOW_TITLE: &str = "DeadlockMacroOverlay";
 const CONFIG_FILE: &str = "deadlock_overlay.cfg";
 
-/// Adjusts the Win32 WS_EX_TRANSPARENT extended style to toggle mouse click-through.
+/// Adjusts the Win32 WS_EX_TRANSPARENT extended style to toggle mouse click-through with SWP_FRAMECHANGED.
 fn apply_click_through(hwnd: HWND, click_through: bool) {
     if hwnd.0.is_null() {
         return;
@@ -33,6 +34,15 @@ fn apply_click_through(hwnd: HWND, click_through: bool) {
             (current_style & !(WS_EX_TRANSPARENT.0 as isize)) | (WS_EX_LAYERED.0 as isize)
         };
         let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
+        let _ = SetWindowPos(
+            hwnd,
+            HWND(std::ptr::null_mut()),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        );
     }
 }
 
@@ -79,7 +89,8 @@ fn main() -> eframe::Result<()> {
                 // Poll for HWND if not yet found
                 if cached_hwnd.0.is_null() {
                     unsafe {
-                        cached_hwnd = FindWindowW(None, w!("DeadlockMacroOverlay")).unwrap_or(HWND(std::ptr::null_mut()));
+                        cached_hwnd = FindWindowW(None, w!("DeadlockMacroOverlay"))
+                            .unwrap_or(HWND(std::ptr::null_mut()));
                         if !cached_hwnd.0.is_null() {
                             // Initial state: ghost mode (click-through enabled)
                             apply_click_through(cached_hwnd, true);
@@ -139,7 +150,7 @@ fn main() -> eframe::Result<()> {
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
-            .with_inner_size([300.0, 180.0])
+            .with_inner_size([300.0, 160.0])
             .with_position([config.win_x as f32, config.win_y as f32]),
         ..Default::default()
     };

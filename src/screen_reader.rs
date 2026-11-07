@@ -88,8 +88,9 @@ pub fn capture_screen_roi(x: i32, y: i32, width: i32, height: i32) -> Option<Vec
 
 /// Parses recognized text string to find `MM:SS` match time format and returns total seconds.
 pub fn parse_match_time(text: &str) -> Option<u32> {
-    // Sanitize common OCR confusions: e.g. uppercase 'O' -> '0'
-    let sanitized: String = text
+    // Sanitize common OCR confusions: e.g. uppercase 'O' -> '0' and spaced colons
+    let normalized = text.replace(" :", ":").replace(": ", ":");
+    let sanitized: String = normalized
         .chars()
         .map(|c| match c {
             'O' | 'o' => '0',

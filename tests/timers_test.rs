@@ -84,6 +84,12 @@ fn test_mid_boss_tracker_progression_and_cancel() {
     tracker.record_kill(720);
     assert_eq!(tracker.get_active_respawn(720), Some(1140));
 
+    // Check expiration: at 1145s (active window: 1140..=1150)
+    assert_eq!(tracker.get_active_respawn(1145), Some(1140));
+
+    // At 1151s (grace period expired), should return None to avoid queue hijacking
+    assert_eq!(tracker.get_active_respawn(1151), None);
+
     // 2nd Kill at 1200s (20m) -> 6m (360s) respawn -> 1560s
     tracker.record_kill(1200);
     assert_eq!(tracker.kills, 2);
@@ -121,7 +127,8 @@ fn test_clock_filter_noise_and_drift() {
     assert_eq!(filter.current_seconds(), 0);
 
     // Initial detection of 01:00 (60s)
-    filter.feed_ocr_reading(Some(60));
+    let updated = filter.feed_ocr_reading(Some(60));
+    assert!(updated);
     assert_eq!(filter.current_seconds(), 60);
 
     // Interpolation (tick without OCR)
@@ -130,12 +137,20 @@ fn test_clock_filter_noise_and_drift() {
 
     // Single outlier OCR reading (e.g. noise reads 01:30 = 90s, difference > 3s)
     // Should be rejected until confirmed
-    filter.feed_ocr_reading(Some(90));
-    assert_eq!(filter.current_seconds(), 62); // Kept interpolating
+    let updated = filter.feed_ocr_reading(Some(90));
+    assert!(!updated);
+    assert_eq!(filter.current_seconds(), 61); // Does not jump or double-tick
 
     // Second consecutive read confirms 90s -> synchronizes to 90s
-    filter.feed_ocr_reading(Some(90));
+    let updated = filter.feed_ocr_reading(Some(90));
+    assert!(updated);
     assert_eq!(filter.current_seconds(), 90);
+
+    // Adjust seconds test
+    filter.adjust_seconds(5);
+    assert_eq!(filter.current_seconds(), 95);
+    filter.adjust_seconds(-10);
+    assert_eq!(filter.current_seconds(), 85);
 
     // Reset clears everything
     filter.reset();

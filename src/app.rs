@@ -58,7 +58,10 @@ impl DeadlockApp {
             latest_reading = Some(msg);
         }
         if let Some(reading) = latest_reading {
-            self.clock.feed_ocr_reading(reading);
+            if self.clock.feed_ocr_reading(reading) {
+                // Reset tick timer when OCR successfully updates the clock to avoid double increment
+                self.last_tick_instant = std::time::Instant::now();
+            }
         }
 
         // Tick local clock once per second if active
@@ -69,19 +72,29 @@ impl DeadlockApp {
     }
 
     /// Evaluates scheduled events and fires synthetic audio alerts when crossing thresholds.
+    /// Deduplicates multiple simultaneous events to avoid consecutive audio stutter.
     pub fn process_alerts(&mut self, events: &[MacroEvent]) {
         let now = self.clock.current_seconds();
+        let mut trigger_warn = false;
+        let mut trigger_active = false;
+
         for event in events {
             let key = (event.kind, event.target_time);
             let status = event.status(now);
 
             if status == EventStatus::Warning && !self.triggered_warnings.contains(&key) {
                 self.triggered_warnings.insert(key);
-                self.audio.play_warning();
+                trigger_warn = true;
             } else if status == EventStatus::Active && !self.triggered_alerts.contains(&key) {
                 self.triggered_alerts.insert(key);
-                self.audio.play_active();
+                trigger_active = true;
             }
+        }
+
+        if trigger_active {
+            self.audio.play_active();
+        } else if trigger_warn {
+            self.audio.play_warning();
         }
     }
 
@@ -103,12 +116,19 @@ impl eframe::App for DeadlockApp {
 
         let is_interactive = self.interactive_mode.load(Ordering::Relaxed);
 
+        // Dynamically adjust viewport size between compact HUD and full calibration controls
+        if is_interactive {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(310.0, 340.0)));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(300.0, 155.0)));
+        }
+
         // Styling based on interactive state
         let frame = if is_interactive {
             egui::Frame::none()
-                .fill(Color32::from_rgba_premultiplied(18, 20, 24, 235))
+                .fill(Color32::from_rgba_premultiplied(18, 20, 24, 240))
                 .stroke(Stroke::new(1.5_f32, Color32::from_rgb(0, 210, 255))) // Cyan border for calibration
-                .inner_margin(Margin::same(10.0))
+                .inner_margin(Margin::same(8.0))
                 .rounding(Rounding::same(8.0))
         } else {
             egui::Frame::none()
@@ -119,29 +139,35 @@ impl eframe::App for DeadlockApp {
         };
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            // Header / Tab Switcher (Ready for Phase 2)
             if is_interactive {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.tab, AppTab::TimersOverlay, "⏱ Timers");
-                    ui.selectable_value(&mut self.tab, AppTab::BuildsCounter, "🛡 Builds (Fase 2)");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("[Modo Calibración]").color(Color32::from_rgb(0, 210, 255)).small());
-                    });
-                });
-                ui.separator();
-            }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Title Bar with Drag handle
+                    ui.horizontal(|ui| {
+                        let drag_btn = ui.button("✥ Arrastrar Overlay");
+                        if drag_btn.drag_started() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
 
-            match self.tab {
-                AppTab::TimersOverlay => {
-                    self.render_timers_view(ui, current_time, &events, is_interactive);
-                }
-                AppTab::BuildsCounter => {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(10.0);
-                        ui.label(egui::RichText::new("Módulo de Builds y Counters (Fase 2)").strong());
-                        ui.label(egui::RichText::new("Se activará en la próxima fase conectando api.deadlock-api.com").small().color(Color32::GRAY));
+                        ui.selectable_value(&mut self.tab, AppTab::TimersOverlay, "⏱ Timers");
+                        ui.selectable_value(&mut self.tab, AppTab::BuildsCounter, "🛡 Builds");
                     });
-                }
+                    ui.separator();
+
+                    match self.tab {
+                        AppTab::TimersOverlay => {
+                            self.render_timers_view(ui, current_time, &events, true);
+                        }
+                        AppTab::BuildsCounter => {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(10.0);
+                                ui.label(egui::RichText::new("Módulo de Builds y Counters (Fase 2)").strong());
+                                ui.label(egui::RichText::new("Conexión con api.deadlock-api.com").small().color(Color32::GRAY));
+                            });
+                        }
+                    }
+                });
+            } else {
+                self.render_timers_view(ui, current_time, &events, false);
             }
         });
 
@@ -244,11 +270,28 @@ impl DeadlockApp {
 
         // 4. MODO CALIBRACIÓN (Controles mostrados únicamente en F10)
         if is_interactive {
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             ui.separator();
-            ui.label(egui::RichText::new("Calibración del ROI de Captura:").strong().small());
 
-            egui::Grid::new("roi_grid").num_columns(2).spacing(Vec2::new(8.0, 4.0)).show(ui, |ui| {
+            // Manual clock overrides in case of OCR fallback
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Reloj Manual:").small().strong());
+                let toggle_label = if self.clock.is_active() { "⏸ Pausa" } else { "▶ Iniciar" };
+                if ui.button(toggle_label).clicked() {
+                    self.clock.toggle_active();
+                }
+                if ui.button("-5s").clicked() {
+                    self.clock.adjust_seconds(-5);
+                }
+                if ui.button("+5s").clicked() {
+                    self.clock.adjust_seconds(5);
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Coordenadas ROI de Pantalla:").strong().small());
+
+            egui::Grid::new("roi_grid").num_columns(2).spacing(Vec2::new(8.0, 3.0)).show(ui, |ui| {
                 ui.label("Posición X:");
                 ui.add(egui::DragValue::new(&mut self.config.roi_x).speed(1.0));
                 ui.end_row();
@@ -268,14 +311,14 @@ impl DeadlockApp {
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Guardar Coordenadas").clicked() {
+                if ui.button("Guardar").clicked() {
                     let _ = self.config.save_to_file(&self.config_path);
                 }
-                if ui.button("Restablecer Defaults").clicked() {
+                if ui.button("Defaults").clicked() {
                     self.config = OverlayConfig::default_for_resolution(1920, 1080);
                     let _ = self.config.save_to_file(&self.config_path);
                 }
-                if ui.button("Reiniciar Partida").clicked() {
+                if ui.button("Reset Partida").clicked() {
                     self.reset_match();
                 }
             });

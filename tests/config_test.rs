@@ -14,16 +14,17 @@ fn test_default_config_for_resolution() {
 
 #[test]
 fn test_save_and_load_round_trip() {
-    let test_path = "test_deadlock_config.cfg";
+    let mut test_path = std::env::temp_dir();
+    test_path.push("test_deadlock_config.cfg");
     let mut original = OverlayConfig::default_for_resolution(2560, 1440);
     original.win_x = 2100;
     original.win_y = 150;
     original.roi_x = 1220;
     original.roi_y = 12;
 
-    original.save_to_file(test_path).expect("Failed to save config");
+    original.save_to_file(&test_path).expect("Failed to save config");
 
-    let loaded = OverlayConfig::load_from_file(test_path, 1920, 1080);
+    let loaded = OverlayConfig::load_from_file(&test_path, 1920, 1080);
     assert_eq!(loaded.win_x, 2100);
     assert_eq!(loaded.win_y, 150);
     assert_eq!(loaded.roi_x, 1220);

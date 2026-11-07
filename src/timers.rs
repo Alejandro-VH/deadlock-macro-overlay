@@ -82,8 +82,12 @@ impl MidBossTracker {
         self.next_respawn_time = None;
     }
 
-    pub fn get_active_respawn(&self, _current_seconds: u32) -> Option<u32> {
-        self.next_respawn_time
+    /// Returns active respawn target only while event is pending or within the 10s active window.
+    pub fn get_active_respawn(&self, current_seconds: u32) -> Option<u32> {
+        match self.next_respawn_time {
+            Some(respawn) if current_seconds <= respawn + 10 => Some(respawn),
+            _ => None,
+        }
     }
 }
 
@@ -137,7 +141,7 @@ impl MacroScheduler {
             });
         }
 
-        // 4. Mid Boss (if tracked and active)
+        // 4. Mid Boss (if tracked and actively counting down or within 10s grace)
         if let Some(respawn) = self.midboss.get_active_respawn(current_seconds) {
             events.push(MacroEvent {
                 kind: EventKind::MidBoss,
@@ -173,14 +177,15 @@ impl ClockFilter {
         self.is_active
     }
 
-    pub fn feed_ocr_reading(&mut self, raw_time: Option<u32>) {
+    /// Feeds raw OCR reading. Returns true if the clock was updated directly from OCR.
+    pub fn feed_ocr_reading(&mut self, raw_time: Option<u32>) -> bool {
         if let Some(raw) = raw_time {
             self.is_active = true;
             if self.current_seconds == 0 {
                 self.current_seconds = raw;
                 self.pending_candidate = None;
                 self.consecutive_reads = 0;
-                return;
+                return true;
             }
 
             let diff = (raw as i32 - self.current_seconds as i32).abs();
@@ -188,19 +193,22 @@ impl ClockFilter {
                 self.current_seconds = raw;
                 self.pending_candidate = None;
                 self.consecutive_reads = 0;
+                return true;
             } else if Some(raw) == self.pending_candidate {
                 self.consecutive_reads += 1;
                 if self.consecutive_reads >= 1 {
                     self.current_seconds = raw;
                     self.pending_candidate = None;
                     self.consecutive_reads = 0;
+                    return true;
                 }
             } else {
                 self.pending_candidate = Some(raw);
                 self.consecutive_reads = 0;
-                self.current_seconds += 1; // Interpolate while awaiting confirmation
+                // No double increment here; tick_second will handle elapsed time
             }
         }
+        false
     }
 
     pub fn tick_second(&mut self) {
@@ -212,6 +220,16 @@ impl ClockFilter {
     pub fn set_manual_time(&mut self, seconds: u32) {
         self.current_seconds = seconds;
         self.is_active = true;
+    }
+
+    pub fn adjust_seconds(&mut self, delta: i32) {
+        let new_val = (self.current_seconds as i32 + delta).max(0);
+        self.current_seconds = new_val as u32;
+        self.is_active = true;
+    }
+
+    pub fn toggle_active(&mut self) {
+        self.is_active = !self.is_active;
     }
 
     pub fn reset(&mut self) {

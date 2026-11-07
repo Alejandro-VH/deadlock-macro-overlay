@@ -12,6 +12,9 @@ fn test_parse_match_time_standard() {
 fn test_parse_match_time_ocr_glitches() {
     // Semicolon instead of colon
     assert_eq!(parse_match_time("05;30"), Some(330));
+    // Spaces around colon
+    assert_eq!(parse_match_time("05 : 30"), Some(330));
+    assert_eq!(parse_match_time("12: 45"), Some(765));
     // Uppercase 'O' instead of '0'
     assert_eq!(parse_match_time("O5:3O"), Some(330));
     // Surrounding text or symbols
