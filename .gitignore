@@ -1,0 +1,8 @@
+/target
+Cargo.lock
+*.cfg
+*.json
+*.exe
+.worktrees/
+docs/
+GLOSSARY.md
