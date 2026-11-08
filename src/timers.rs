@@ -1,7 +1,8 @@
 /// Event types tracked by the Deadlock macro overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EventKind {
-    T1Camps,          // Initial boxes, golden statues, and small jungle unlock at 02:00
+    T1Camps,          // Initial small jungle camps unlock at 02:00
+    BreakableCrates,  // Wooden boxes and golden statues spawn at 03:00
     BridgeBuffs,      // Bridge powerup runes at 05:00 and every 5:00 thereafter
     T2Camps,          // Medium jungle unlock at 07:00
     SinnersSacrifice, // Sinner's Sacrifice slot machines & hard jungle (T3) unlock at 08:00
@@ -13,7 +14,8 @@ pub enum EventKind {
 impl EventKind {
     pub fn display_name(&self) -> &'static str {
         match self {
-            EventKind::T1Camps => "Cajas & Jungla T1",
+            EventKind::T1Camps => "Jungla T1 (Pequeña)",
+            EventKind::BreakableCrates => "Cajas & Estatuas",
             EventKind::BridgeBuffs => "Bridge Buffs",
             EventKind::T2Camps => "Jungla T2 (Mediana)",
             EventKind::SinnersSacrifice => "Sinner's & Jungla T3",
@@ -61,6 +63,7 @@ impl MacroEvent {
     pub fn interval_span(&self) -> u32 {
         match self.kind {
             EventKind::T1Camps => 120,
+            EventKind::BreakableCrates => 60,
             EventKind::BridgeBuffs => 300,
             EventKind::T2Camps => 120,
             EventKind::SinnersSacrifice => 60,
@@ -82,6 +85,54 @@ impl MacroEvent {
     }
 }
 
+/// Tracks manual breakable box / golden statue farm routes (180s cycle).
+#[derive(Debug, Clone, Default)]
+pub struct BoxRouteTracker {
+    pub active_target: Option<u32>,
+}
+
+impl BoxRouteTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Toggles the 180s (3m) box route countdown.
+    /// Returns true if started, false if cancelled.
+    pub fn toggle(&mut self, match_time: u32) -> bool {
+        if self.is_active(match_time) {
+            self.active_target = None;
+            false
+        } else {
+            self.active_target = Some(match_time + 180);
+            true
+        }
+    }
+
+    pub fn is_active(&self, match_time: u32) -> bool {
+        match self.active_target {
+            Some(target) => match_time <= target + 10,
+            None => false,
+        }
+    }
+
+    pub fn get_remaining(&self, match_time: u32) -> Option<u32> {
+        match self.active_target {
+            Some(target) if match_time <= target + 10 => {
+                Some(target.saturating_sub(match_time))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        self.active_target = None;
+    }
+
+    pub fn reset(&mut self) {
+        self.active_target = None;
+    }
+}
+
 /// Tracks manual kills and dynamic respawn countdowns for the Mid Boss objective.
 #[derive(Debug, Clone, Default)]
 pub struct MidBossTracker {
@@ -90,6 +141,26 @@ pub struct MidBossTracker {
 }
 
 impl MidBossTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_active(&self, current_seconds: u32) -> bool {
+        self.get_active_respawn(current_seconds).is_some()
+    }
+
+    /// Toggles Mid Boss kill timer with a single key.
+    /// Returns true if started, false if cancelled.
+    pub fn toggle_kill(&mut self, match_time: u32) -> bool {
+        if self.is_active(match_time) {
+            self.cancel_kill();
+            false
+        } else {
+            self.record_kill(match_time);
+            true
+        }
+    }
+
     pub fn record_kill(&mut self, match_time: u32) {
         self.kills += 1;
         let cooldown = match self.kills {
@@ -125,13 +196,14 @@ impl MidBossTracker {
 #[derive(Debug, Clone, Default)]
 pub struct MacroScheduler {
     pub midboss: MidBossTracker,
+    pub boxes: BoxRouteTracker,
 }
 
 impl MacroScheduler {
     pub fn calculate_events(&self, current_seconds: u32) -> Vec<MacroEvent> {
         let mut events = Vec::new();
 
-        // 1. Cajas y Jungla T1 (Hito inicial a los 120s / 02:00, visible hasta 10s después)
+        // 1. Jungla T1 / Pequeña (Hito inicial a los 120s / 02:00, visible hasta 10s después)
         if current_seconds <= 130 {
             events.push(MacroEvent {
                 kind: EventKind::T1Camps,
@@ -139,7 +211,15 @@ impl MacroScheduler {
             });
         }
 
-        // 2. Bridge Buffs (Primer spawn a los 300s / 05:00, luego cada 300s: 10:00, 15:00, 20:00...)
+        // 2. Cajas & Estatuas de Almas (Primer spawn a los 180s / 03:00, visible hasta 10s después)
+        if current_seconds <= 190 {
+            events.push(MacroEvent {
+                kind: EventKind::BreakableCrates,
+                target_time: 180,
+            });
+        }
+
+        // 3. Bridge Buffs (Primer spawn a los 300s / 05:00, luego cada 300s: 10:00, 15:00, 20:00...)
         let bridge_target = if current_seconds < 300 {
             300
         } else {
@@ -155,7 +235,7 @@ impl MacroScheduler {
             target_time: bridge_target,
         });
 
-        // 3. Jungla T2 / Mediana (Hito inicial a los 420s / 07:00, visible hasta 10s después)
+        // 4. Jungla T2 / Mediana (Hito inicial a los 420s / 07:00, visible hasta 10s después)
         if current_seconds <= 430 {
             events.push(MacroEvent {
                 kind: EventKind::T2Camps,
@@ -163,7 +243,7 @@ impl MacroScheduler {
             });
         }
 
-        // 4. Sinner's Sacrifice y Jungla T3 (Hito a los 480s / 08:00, visible hasta 10s después)
+        // 5. Sinner's Sacrifice y Jungla T3 (Hito a los 480s / 08:00, visible hasta 10s después)
         if current_seconds <= 490 {
             events.push(MacroEvent {
                 kind: EventKind::SinnersSacrifice,
@@ -171,7 +251,7 @@ impl MacroScheduler {
             });
         }
 
-        // 5. Soul Urn (Primer spawn a los 600s / 10:00, luego cada 300s: 15:00, 20:00, 25:00...)
+        // 6. Soul Urn (Primer spawn a los 600s / 10:00, luego cada 300s: 15:00, 20:00, 25:00...)
         let urn_target = if current_seconds < 600 {
             600
         } else {
@@ -187,7 +267,7 @@ impl MacroScheduler {
             target_time: urn_target,
         });
 
-        // 6. Mid Boss Spawn Inicial a los 10:00 (600s) si nunca ha muerto aún
+        // 7. Mid Boss Spawn Inicial a los 10:00 (600s) si nunca ha muerto aún
         if self.midboss.kills == 0 && current_seconds <= 610 {
             events.push(MacroEvent {
                 kind: EventKind::MidBossSpawn,
@@ -195,7 +275,7 @@ impl MacroScheduler {
             });
         }
 
-        // 7. Mid Boss Respawn tras muerte (si fue registrado con F9)
+        // 8. Mid Boss Respawn tras muerte (si fue registrado con F9)
         if let Some(respawn) = self.midboss.get_active_respawn(current_seconds) {
             events.push(MacroEvent {
                 kind: EventKind::MidBossRespawn,
@@ -219,6 +299,31 @@ impl MacroScheduler {
                 .collect()
         } else {
             Vec::new()
+        }
+    }
+
+    /// Returns both the immediate milestone(s) and a preview of the subsequent milestone.
+    pub fn get_immediate_and_next_events(
+        &self,
+        current_seconds: u32,
+    ) -> (Vec<MacroEvent>, Option<MacroEvent>) {
+        let all_events = self.calculate_events(current_seconds);
+        if let Some(first) = all_events.first() {
+            let earliest_time = first.target_time;
+            let immediate: Vec<MacroEvent> = all_events
+                .iter()
+                .filter(|e| e.target_time == earliest_time)
+                .cloned()
+                .collect();
+
+            let next = all_events
+                .iter()
+                .find(|e| e.target_time > earliest_time)
+                .cloned();
+
+            (immediate, next)
+        } else {
+            (Vec::new(), None)
         }
     }
 }
@@ -262,41 +367,42 @@ impl ClockFilter {
                 self.pending_candidate = None;
                 self.consecutive_reads = 0;
                 return true;
-            } else if Some(raw) == self.pending_candidate {
-                self.consecutive_reads += 1;
-                if self.consecutive_reads >= 1 {
-                    self.current_seconds = raw;
-                    self.pending_candidate = None;
-                    self.consecutive_reads = 0;
-                    return true;
+            }
+
+            if let Some(pending) = self.pending_candidate {
+                if (raw as i32 - pending as i32).abs() <= 2 {
+                    self.consecutive_reads += 1;
+                    if self.consecutive_reads >= 2 {
+                        self.current_seconds = raw;
+                        self.pending_candidate = None;
+                        self.consecutive_reads = 0;
+                        return true;
+                    }
+                } else {
+                    self.pending_candidate = Some(raw);
+                    self.consecutive_reads = 1;
                 }
             } else {
                 self.pending_candidate = Some(raw);
-                self.consecutive_reads = 0;
+                self.consecutive_reads = 1;
             }
         }
         false
     }
 
+    /// Increments the local clock by 1 second during OCR occlusions.
     pub fn tick_second(&mut self) {
         if self.is_active {
-            self.current_seconds += 1;
+            self.current_seconds = self.current_seconds.saturating_add(1);
         }
     }
 
-    pub fn set_manual_time(&mut self, seconds: u32) {
-        self.current_seconds = seconds;
-        self.is_active = true;
-    }
-
     pub fn adjust_seconds(&mut self, delta: i32) {
-        let new_val = (self.current_seconds as i32 + delta).max(0);
-        self.current_seconds = new_val as u32;
-        self.is_active = true;
-    }
-
-    pub fn toggle_active(&mut self) {
-        self.is_active = !self.is_active;
+        if delta < 0 {
+            self.current_seconds = self.current_seconds.saturating_sub(delta.unsigned_abs());
+        } else {
+            self.current_seconds = self.current_seconds.saturating_add(delta as u32);
+        }
     }
 
     pub fn reset(&mut self) {
@@ -307,7 +413,6 @@ impl ClockFilter {
     }
 }
 
-/// Helper to format raw seconds into standard MM:SS string.
 pub fn format_time_mmss(total_seconds: u32) -> String {
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;

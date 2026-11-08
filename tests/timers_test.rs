@@ -1,5 +1,6 @@
 use deadlock_overlay::timers::{
-    ClockFilter, EventKind, EventStatus, MacroEvent, MacroScheduler, MidBossTracker,
+    BoxRouteTracker, ClockFilter, EventKind, EventStatus, MacroEvent, MacroScheduler,
+    MidBossTracker,
 };
 
 #[test]
@@ -30,15 +31,21 @@ fn test_event_progress_calculation() {
 fn test_macro_milestones_progression() {
     let scheduler = MacroScheduler::default();
 
-    // 1. At 60s (01:00), the immediate next event is Cajas & Jungla T1 at 120s (02:00)
+    // 1. At 60s (01:00), the immediate next event is Jungla T1 at 120s (02:00)
     let next = scheduler.get_immediate_next_events(60);
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].kind, EventKind::T1Camps);
     assert_eq!(next[0].target_time, 120);
     assert_eq!(next[0].remaining_seconds(60), 60);
 
-    // 2. At 135s (02:15), the immediate next event is Bridge Buffs at 300s (05:00)
+    // 2. At 135s (02:15), the immediate next event is Cajas at 180s (03:00)
     let next = scheduler.get_immediate_next_events(135);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::BreakableCrates);
+    assert_eq!(next[0].target_time, 180);
+
+    // 3. At 200s (03:20), the immediate next event is Bridge Buffs at 300s (05:00)
+    let next = scheduler.get_immediate_next_events(200);
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].kind, EventKind::BridgeBuffs);
     assert_eq!(next[0].target_time, 300);
@@ -193,4 +200,81 @@ fn test_clock_filter_noise_and_drift() {
     // Reset clears everything
     filter.reset();
     assert_eq!(filter.current_seconds(), 0);
+}
+
+#[test]
+fn test_box_route_tracker_toggle() {
+    let mut tracker = BoxRouteTracker::new();
+    assert_eq!(tracker.get_remaining(300), None);
+
+    // 1. First toggle starts 180s (3m) timer
+    let started = tracker.toggle(300);
+    assert!(started);
+    assert_eq!(tracker.get_remaining(300), Some(180));
+    assert_eq!(tracker.get_remaining(360), Some(120));
+    assert_eq!(tracker.get_remaining(479), Some(1));
+    assert_eq!(tracker.get_remaining(480), Some(0));
+    // After 10s grace period past 0, expires
+    assert_eq!(tracker.get_remaining(491), None);
+
+    // 2. Second toggle while active cancels it immediately
+    let active_after_toggle = tracker.toggle(300);
+    assert!(!active_after_toggle);
+    assert_eq!(tracker.get_remaining(300), None);
+}
+
+#[test]
+fn test_mid_boss_tracker_toggle() {
+    let mut tracker = MidBossTracker::new();
+    assert_eq!(tracker.get_active_respawn(600), None);
+
+    // 1. First press: records kill, starts 7m (420s) respawn -> 1020s
+    let active = tracker.toggle_kill(600);
+    assert!(active);
+    assert_eq!(tracker.get_active_respawn(600), Some(1020));
+
+    // 2. Second press while active: cancels it immediately
+    let active_after_toggle = tracker.toggle_kill(600);
+    assert!(!active_after_toggle);
+    assert_eq!(tracker.get_active_respawn(600), None);
+}
+
+#[test]
+fn test_corrected_cajas_and_jungle_spawns() {
+    let scheduler = MacroScheduler::default();
+
+    // At 60s (01:00), immediate next event is Jungla T1 at 120s (02:00)
+    let next = scheduler.get_immediate_next_events(60);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::T1Camps);
+    assert_eq!(next[0].target_time, 120);
+
+    // At 135s (02:15), immediate next event is Cajas & Breakables at 180s (03:00)
+    let next = scheduler.get_immediate_next_events(135);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::BreakableCrates);
+    assert_eq!(next[0].target_time, 180);
+
+    // At 200s (03:20), immediate next event is Bridge Buffs at 300s (05:00)
+    let next = scheduler.get_immediate_next_events(200);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::BridgeBuffs);
+    assert_eq!(next[0].target_time, 300);
+}
+
+#[test]
+fn test_dual_horizon_events() {
+    let scheduler = MacroScheduler::default();
+
+    // At 285s (04:45), immediate is Bridge Buffs at 300s (05:00)
+    // and subsequent milestone is Jungla T2 at 420s (07:00)
+    let (immediate, next) = scheduler.get_immediate_and_next_events(285);
+    assert_eq!(immediate.len(), 1);
+    assert_eq!(immediate[0].kind, EventKind::BridgeBuffs);
+    assert_eq!(immediate[0].target_time, 300);
+
+    assert!(next.is_some());
+    let next_event = next.unwrap();
+    assert_eq!(next_event.kind, EventKind::T2Camps);
+    assert_eq!(next_event.target_time, 420);
 }
