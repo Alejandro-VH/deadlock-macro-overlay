@@ -13,6 +13,9 @@ pub struct OverlayConfig {
     pub roi_h: i32,
     pub last_hero: String,
     pub is_muted: bool,
+    pub key_box_timer: u16,
+    pub key_midboss: u16,
+    pub key_interactive: u16,
 }
 
 impl OverlayConfig {
@@ -28,6 +31,9 @@ impl OverlayConfig {
             roi_h: 42,
             last_hero: String::new(),
             is_muted: false,
+            key_box_timer: 0x77,   // VK_F8
+            key_midboss: 0x78,     // VK_F9
+            key_interactive: 0x79, // VK_F10
         }
     }
 
@@ -44,6 +50,9 @@ impl OverlayConfig {
             writeln!(file, "last_hero={}", self.last_hero)?;
         }
         writeln!(file, "is_muted={}", self.is_muted)?;
+        writeln!(file, "key_box_timer={}", key_to_display_name(self.key_box_timer))?;
+        writeln!(file, "key_midboss={}", key_to_display_name(self.key_midboss))?;
+        writeln!(file, "key_interactive={}", key_to_display_name(self.key_interactive))?;
         file.flush()
     }
 
@@ -106,11 +115,87 @@ impl OverlayConfig {
                             config.is_muted = v;
                         }
                     }
+                    "key_box_timer" => {
+                        if let Some(vk) = display_name_to_key(val) {
+                            config.key_box_timer = vk;
+                        }
+                    }
+                    "key_midboss" => {
+                        if let Some(vk) = display_name_to_key(val) {
+                            config.key_midboss = vk;
+                        }
+                    }
+                    "key_interactive" => {
+                        if let Some(vk) = display_name_to_key(val) {
+                            config.key_interactive = vk;
+                        }
+                    }
                     _ => {}
                 }
             }
         }
 
         config
+    }
+}
+
+/// Converts a Win32 virtual key code into a human-readable display string.
+pub fn key_to_display_name(vk: u16) -> String {
+    match vk {
+        0x01 => "Mouse1".to_string(),
+        0x02 => "Mouse2".to_string(),
+        0x04 => "Mouse3".to_string(),
+        0x05 => "Mouse4".to_string(),
+        0x06 => "Mouse5".to_string(),
+        0x09 => "Tab".to_string(),
+        0x10 => "Shift".to_string(),
+        0x11 => "Ctrl".to_string(),
+        0x12 => "Alt".to_string(),
+        0x14 => "CapsLock".to_string(),
+        0x1B => "Esc".to_string(),
+        0x20 => "Space".to_string(),
+        0x30..=0x39 => format!("{}", (vk - 0x30) as u8 as char),
+        0x41..=0x5A => format!("{}", vk as u8 as char),
+        0x70..=0x7B => format!("F{}", vk - 0x6F),
+        _ => format!("0x{:02X}", vk),
+    }
+}
+
+/// Parses a human-readable key string (or hex string) into a Win32 virtual key code.
+pub fn display_name_to_key(name: &str) -> Option<u16> {
+    let lower = name.trim().to_lowercase();
+    match lower.as_str() {
+        "mouse1" => Some(0x01),
+        "mouse2" => Some(0x02),
+        "mouse3" => Some(0x04),
+        "mouse4" => Some(0x05),
+        "mouse5" => Some(0x06),
+        "tab" => Some(0x09),
+        "shift" => Some(0x10),
+        "ctrl" => Some(0x11),
+        "alt" => Some(0x12),
+        "capslock" => Some(0x14),
+        "esc" | "escape" => Some(0x1B),
+        "space" => Some(0x20),
+        s if s.starts_with('f') && s.len() >= 2 => {
+            if let Ok(num) = s[1..].parse::<u16>() {
+                if (1..=12).contains(&num) {
+                    return Some(0x6F + num);
+                }
+            }
+            None
+        }
+        s if s.len() == 1 => {
+            let ch = s.chars().next().unwrap();
+            if ch.is_ascii_alphabetic() {
+                Some(ch.to_ascii_uppercase() as u16)
+            } else if ch.is_ascii_digit() {
+                Some(ch as u16)
+            } else {
+                None
+            }
+        }
+        s if s.starts_with("0x") => u16::from_str_radix(&s[2..], 16).ok(),
+        _ => None,
     }
 }
