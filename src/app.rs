@@ -1,6 +1,6 @@
 use crate::audio::AudioNotifier;
-use crate::config::OverlayConfig;
-use crate::hero_tracker::{get_all_heroes, HeroSelectionSource, HeroTracker};
+use crate::config::{key_to_display_name, OverlayConfig};
+use crate::hero_tracker::HeroTracker;
 use crate::timers::{format_time_mmss, ClockFilter, EventKind, EventStatus, MacroEvent, MacroScheduler};
 use eframe::egui::{self, Color32, Margin, RichText, Rounding, Stroke, Vec2};
 use std::collections::HashSet;
@@ -10,10 +10,61 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::core::w;
 use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, ReleaseCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetCursorPos, GetWindowRect, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebindTarget {
+    BoxTimer,
+    MidBoss,
+    Interactive,
+}
+
+pub fn poll_key_for_rebinding() -> Option<u16> {
+    unsafe {
+        // Esc cancels rebinding
+        if (GetAsyncKeyState(0x1B) as u16 & 0x8000) != 0 {
+            return Some(0);
+        }
+        // Mouse side buttons
+        if (GetAsyncKeyState(0x05) as u16 & 0x8000) != 0 {
+            return Some(0x05);
+        }
+        if (GetAsyncKeyState(0x06) as u16 & 0x8000) != 0 {
+            return Some(0x06);
+        }
+        if (GetAsyncKeyState(0x04) as u16 & 0x8000) != 0 {
+            return Some(0x04);
+        }
+        // Function keys F1..F12
+        for vk in 0x70..=0x7B {
+            if (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 {
+                return Some(vk as u16);
+            }
+        }
+        // Letters A..Z
+        for vk in 0x41..=0x5A {
+            if (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 {
+                return Some(vk as u16);
+            }
+        }
+        // Digits 0..9
+        for vk in 0x30..=0x39 {
+            if (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 {
+                return Some(vk as u16);
+            }
+        }
+        // Modifiers / special keys: CapsLock (0x14), Space (0x20), Alt (0x12), Ctrl (0x11), Shift (0x10), Tab (0x09)
+        for &vk in &[0x14, 0x20, 0x12, 0x11, 0x10, 0x09] {
+            if (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 {
+                return Some(vk as u16);
+            }
+        }
+    }
+    None
+}
 
 /// Triggers smooth, zero-latency native Windows window dragging via DWM using actual cursor coordinates.
 pub fn start_native_window_drag() -> Option<(i32, i32)> {
@@ -57,8 +108,10 @@ pub struct DeadlockApp {
     pub triggered_warnings: HashSet<(EventKind, u32)>,
     pub last_tick_instant: Instant,
     pub hero_tracker: HeroTracker,
-    pub hero_menu_open: bool,
-    pub build_drawer_open: bool,
+    pub config_menu_open: bool,
+    pub rebinding: Option<RebindTarget>,
+    pub last_box_rem: Option<u32>,
+    pub last_boss_rem: Option<u32>,
     pub last_log_poll_instant: Instant,
     pub current_window_size: Option<Vec2>,
 }
@@ -90,8 +143,10 @@ impl DeadlockApp {
             triggered_warnings: HashSet::new(),
             last_tick_instant: Instant::now(),
             hero_tracker,
-            hero_menu_open: false,
-            build_drawer_open: false,
+            config_menu_open: false,
+            rebinding: None,
+            last_box_rem: None,
+            last_boss_rem: None,
             last_log_poll_instant: Instant::now(),
             current_window_size: None,
         }
@@ -157,6 +212,8 @@ impl DeadlockApp {
         self.triggered_alerts.clear();
         self.triggered_warnings.clear();
         self.hero_tracker.reset_hero_state();
+        self.last_box_rem = None;
+        self.last_boss_rem = None;
     }
 }
 
@@ -166,12 +223,34 @@ impl eframe::App for DeadlockApp {
         ctx.style_mut(|s| s.interaction.selectable_labels = false);
 
         let is_game_running = self.game_running.load(Ordering::Relaxed);
+        let is_interactive = self.interactive_mode.load(Ordering::Relaxed);
+
+        // Automatic drawer and rebinding state management
+        if !is_interactive {
+            self.config_menu_open = false;
+            self.rebinding = None;
+        }
+
+        // Process key rebinding if active
+        if let Some(target) = self.rebinding {
+            if let Some(vk) = poll_key_for_rebinding() {
+                if vk == 0 {
+                    // Esc pressed: cancel rebinding
+                    self.rebinding = None;
+                } else {
+                    match target {
+                        RebindTarget::BoxTimer => self.config.key_box_timer = vk,
+                        RebindTarget::MidBoss => self.config.key_midboss = vk,
+                        RebindTarget::Interactive => self.config.key_interactive = vk,
+                    }
+                    let _ = self.config.save_to_file(&self.config_path);
+                    self.rebinding = None;
+                }
+            }
+        }
 
         if is_game_running {
             self.update_timing();
-            let current_time = self.clock.current_seconds();
-            let immediate_events = self.scheduler.get_immediate_next_events(current_time);
-            self.process_alerts(&immediate_events);
         } else {
             // Game not running: drain OCR messages and keep clock reset
             while let Ok(_) = self.ocr_rx.try_recv() {}
@@ -181,27 +260,50 @@ impl eframe::App for DeadlockApp {
         }
 
         let current_time = self.clock.current_seconds();
-        let (immediate_events, next_event) = if is_game_running {
-            self.scheduler.get_immediate_and_next_events(current_time)
-        } else {
-            (Vec::new(), None)
-        };
 
-        let is_interactive = self.interactive_mode.load(Ordering::Relaxed);
+        // Check completion transitions for box and boss audio chimes
+        if is_game_running {
+            let box_rem = self.scheduler.boxes.get_remaining(current_time);
+            if let Some(rem) = box_rem {
+                if rem == 0 && self.last_box_rem.map_or(false, |r| r > 0) {
+                    self.audio.play_box_ready();
+                }
+            }
+            self.last_box_rem = box_rem;
 
-        // Close menus automatically if leaving interactive mode
-        if !is_interactive {
-            self.hero_menu_open = false;
-            self.build_drawer_open = false;
+            let boss_rem = self
+                .scheduler
+                .midboss
+                .get_active_respawn(current_time)
+                .map(|r| r.saturating_sub(current_time));
+            if let Some(rem) = boss_rem {
+                if rem == 0 && self.last_boss_rem.map_or(false, |r| r > 0) {
+                    self.audio.play_boss_ready();
+                }
+            }
+            self.last_boss_rem = boss_rem;
         }
 
-        // Fixed compact HUD geometry: 250 x 64 px (expands to 195 px for hero menu, 235 px for build drawer)
-        let target_size = if self.hero_menu_open && is_interactive {
-            Vec2::new(250.0, 195.0)
-        } else if self.build_drawer_open && is_interactive {
-            Vec2::new(270.0, 235.0)
+        let (immediate_group, next_group) = if is_game_running {
+            self.scheduler.get_grouped_horizons(current_time)
         } else {
-            Vec2::new(250.0, 64.0)
+            (None, None)
+        };
+
+        if let Some(ref grp) = immediate_group {
+            self.process_alerts(&grp.events);
+        }
+
+        // Dynamic geometry: Option A vertical layout sizing
+        let target_size = if self.config_menu_open && is_interactive {
+            Vec2::new(240.0, 195.0)
+        } else if !is_game_running {
+            Vec2::new(240.0, 85.0)
+        } else {
+            let event_count = immediate_group.as_ref().map_or(1, |g| g.events.len().max(1));
+            let has_next = next_group.is_some();
+            let h = 82.0 + 16.0 + (event_count as f32 * 16.0) + (if has_next { 30.0 } else { 0.0 });
+            Vec2::new(240.0, h.clamp(120.0, 195.0))
         };
 
         if self.current_window_size != Some(target_size) {
@@ -209,19 +311,47 @@ impl eframe::App for DeadlockApp {
             self.current_window_size = Some(target_size);
         }
 
-        // Deadlock Noir styling: deep charcoal glassmorphism with subtle slate border (no cyan halos)
+        // Deadlock Noir styling: deep charcoal glassmorphism with subtle slate border
         let frame = egui::Frame::none()
             .fill(Color32::from_rgba_premultiplied(13, 17, 23, 235))
             .stroke(Stroke::new(1.0_f32, Color32::from_rgb(37, 45, 61)))
-            .inner_margin(Margin::symmetric(8.0, 4.0))
+            .inner_margin(Margin::symmetric(8.0, 6.0))
             .rounding(Rounding::same(6.0));
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            let hero_info = self.hero_tracker.get_hero();
+            // 1. TOP MICRO PROGRESS BAR (2px)
+            let (bar_rect, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.0), egui::Sense::hover());
+            ui.painter().rect_filled(
+                bar_rect,
+                Rounding::same(1.0),
+                Color32::from_rgb(22, 27, 34),
+            );
 
-            // 1. FILA SUPERIOR: Reloj | Héroe | Reset [↺] | Mute [🔊] | Grip [⠿]
+            if is_game_running {
+                if let Some(ref group) = immediate_group {
+                    if let Some(first_ev) = group.events.first() {
+                        let progress = first_ev.progress(current_time);
+                        let bar_color = match group.status {
+                            EventStatus::Active => Color32::from_rgb(72, 239, 128),
+                            EventStatus::Warning => Color32::from_rgb(251, 146, 60),
+                            _ => Color32::from_rgb(245, 158, 11),
+                        };
+                        let filled_w = (bar_rect.width() * progress).clamp(0.0, bar_rect.width());
+                        let filled_rect = egui::Rect::from_min_size(
+                            bar_rect.min,
+                            Vec2::new(filled_w, bar_rect.height()),
+                        );
+                        ui.painter()
+                            .rect_filled(filled_rect, Rounding::same(1.0), bar_color);
+                    }
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // 2. HEADER ROW: Clock (Left) | Reset [↺] | Mute [Vol/Mute] | Config [⚙] | Grip [::]
             ui.horizontal(|ui| {
-                // Clock display
                 let clock_text = if !is_game_running {
                     "--:--".to_string()
                 } else if self.clock.is_active() {
@@ -240,104 +370,36 @@ impl eframe::App for DeadlockApp {
                     RichText::new(clock_text)
                         .strong()
                         .color(clock_color)
-                        .size(12.5),
+                        .size(13.0),
                 );
 
-                ui.label(RichText::new("│").color(Color32::from_rgb(55, 65, 81)).size(11.0));
-
-                // Hero button / display
-                let hero_label = if hero_info.display_name == "None" {
-                    "Héroe ▾".to_string()
-                } else {
-                    format!("{} ▾", hero_info.display_name)
-                };
-
-                if is_interactive {
-                    let btn = ui.add(
-                        egui::Button::new(
-                            RichText::new(hero_label)
-                                .size(11.5)
-                                .color(Color32::from_rgb(226, 232, 240)),
-                        )
-                        .frame(false),
-                    );
-                    if btn.clicked() {
-                        self.hero_menu_open = !self.hero_menu_open;
-                        if self.hero_menu_open {
-                            self.build_drawer_open = false;
-                        }
-                    }
-                    if btn.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                } else {
-                    let display_str = if hero_info.display_name == "None" {
-                        "—".to_string()
-                    } else {
-                        hero_info.display_name.clone()
-                    };
-                    ui.label(
-                        RichText::new(display_str)
-                            .size(11.5)
-                            .color(Color32::from_rgb(226, 232, 240)),
-                    );
-                }
-
-                // Origin tag (Auto: green dot)
-                if hero_info.source == HeroSelectionSource::Auto && hero_info.display_name != "None" {
-                    ui.label(RichText::new("•").small().color(Color32::from_rgb(72, 239, 128)));
-                }
-
-                // Build & Counters Drawer Toggle [⚔] (interactive only)
-                if is_interactive {
-                    let build_color = if self.build_drawer_open {
-                        Color32::from_rgb(245, 158, 11)
-                    } else {
-                        Color32::from_rgb(148, 163, 184)
-                    };
-                    let build_btn = ui.add(
-                        egui::Button::new(
-                            RichText::new("⚔")
-                                .size(11.0)
-                                .color(build_color),
-                        )
-                        .frame(false),
-                    );
-                    if build_btn.clicked() {
-                        self.build_drawer_open = !self.build_drawer_open;
-                        if self.build_drawer_open {
-                            self.hero_menu_open = false;
-                        }
-                    }
-                    if build_btn.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                }
-
-                // Right-aligned controls: Reset | Mute | Grip
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Drag handle
+                    // Native painter-drawn grip dots (6-dot matrix: 2 columns of 3 dots, 1.2px radius)
                     let (handle_rect, handle_response) = ui.allocate_exact_size(
-                        Vec2::new(18.0, 16.0),
+                        Vec2::new(14.0, 14.0),
                         egui::Sense::click_and_drag(),
                     );
-
                     let is_hovered = handle_response.hovered();
-                    let grip_color = if is_hovered {
+                    let dot_color = if is_hovered {
                         Color32::from_rgb(226, 232, 240)
                     } else {
                         Color32::from_rgb(100, 116, 139)
                     };
+                    let cx = handle_rect.center().x;
+                    let cy = handle_rect.center().y;
+                    for dx in &[-2.5_f32, 2.5_f32] {
+                        for dy in &[-4.0_f32, 0.0_f32, 4.0_f32] {
+                            ui.painter().circle_filled(
+                                egui::pos2(cx + dx, cy + dy),
+                                1.2,
+                                dot_color,
+                            );
+                        }
+                    }
 
-                    ui.painter().text(
-                        handle_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "⠿",
-                        egui::FontId::proportional(13.0),
-                        grip_color,
-                    );
-
-                    if handle_response.is_pointer_button_down_on() || handle_response.drag_started() {
+                    if handle_response.is_pointer_button_down_on()
+                        || handle_response.drag_started()
+                    {
                         if let Some((new_x, new_y)) = start_native_window_drag() {
                             self.config.win_x = new_x;
                             self.config.win_y = new_y;
@@ -345,15 +407,41 @@ impl eframe::App for DeadlockApp {
                         }
                     }
 
-                    // Mute toggle button
+                    // Config Drawer Toggle [⚙] (Interactive mode only)
+                    if is_interactive {
+                        let cfg_color = if self.config_menu_open {
+                            Color32::from_rgb(245, 158, 11)
+                        } else {
+                            Color32::from_rgb(148, 163, 184)
+                        };
+                        let cfg_btn = ui.add(
+                            egui::Button::new(
+                                RichText::new("⚙").size(12.0).color(cfg_color),
+                            )
+                            .frame(false),
+                        );
+                        if cfg_btn.clicked() {
+                            self.config_menu_open = !self.config_menu_open;
+                            self.rebinding = None;
+                        }
+                        if cfg_btn.hovered() {
+                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        }
+                    }
+
+                    // Mute Toggle (Text: Vol / Mute, no broken emojis)
                     let is_muted = self.audio.is_muted();
-                    let mute_symbol = if is_muted { "🔇" } else { "🔊" };
+                    let mute_label = if is_muted { "Mute" } else { "Vol" };
+                    let mute_color = if is_muted {
+                        Color32::from_rgb(239, 68, 68)
+                    } else {
+                        Color32::from_rgb(148, 163, 184)
+                    };
+
                     if is_interactive {
                         let mute_btn = ui.add(
                             egui::Button::new(
-                                RichText::new(mute_symbol)
-                                    .size(11.0)
-                                    .color(if is_muted { Color32::from_rgb(239, 68, 68) } else { Color32::from_rgb(148, 163, 184) }),
+                                RichText::new(mute_label).size(10.5).color(mute_color),
                             )
                             .frame(false),
                         );
@@ -366,7 +454,11 @@ impl eframe::App for DeadlockApp {
                             ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
                         }
                     } else if is_muted {
-                        ui.label(RichText::new("🔇").size(10.0).color(Color32::from_rgb(239, 68, 68)));
+                        ui.label(
+                            RichText::new("Mute")
+                                .size(10.0)
+                                .color(Color32::from_rgb(239, 68, 68)),
+                        );
                     }
 
                     // Reset Match Button [↺]
@@ -389,237 +481,238 @@ impl eframe::App for DeadlockApp {
                 });
             });
 
-            // 2. FILA MEDIA 1: Hito Inmediato / Activo + Contadores Dinámicos (Cajas / Boss)
-            ui.add_space(1.0);
-            if !is_game_running {
-                ui.label(
-                    RichText::new("✦ Esperando a Deadlock...")
-                        .color(Color32::from_rgb(148, 163, 184))
-                        .size(11.0),
-                );
-            } else {
-                // Dynamic active trackers: Box Route (F8) and Mid Boss (F9)
-                let mut status_tokens = Vec::new();
-
-                if let Some(box_rem) = self.scheduler.boxes.get_remaining(current_time) {
-                    if box_rem == 0 {
-                        status_tokens.push("📦 ¡Cajas Listas!".to_string());
-                    } else {
-                        status_tokens.push(format!("📦 {:02}:{:02}", box_rem / 60, box_rem % 60));
-                    }
-                }
-
-                if let Some(respawn_time) = self.scheduler.midboss.get_active_respawn(current_time) {
-                    let rem = respawn_time as i32 - current_time as i32;
-                    if rem > 0 {
-                        status_tokens.push(format!("👑 Boss {:02}:{:02}", rem / 60, rem % 60));
-                    }
-                }
-
-                let extra_tokens_str = if !status_tokens.is_empty() {
-                    format!(" │ {}", status_tokens.join(" "))
-                } else {
-                    String::new()
-                };
-
-                let active_events: Vec<&MacroEvent> = immediate_events
-                    .iter()
-                    .filter(|e| e.status(current_time) == EventStatus::Active)
-                    .collect();
-
-                if !active_events.is_empty() {
-                    let names: Vec<&str> = active_events.iter().map(|e| e.kind.display_name()).collect();
-                    ui.label(
-                        RichText::new(format!("✦ ¡ACTIVO! {}{}", names.join(" + "), extra_tokens_str))
-                            .color(Color32::from_rgb(72, 239, 128))
-                            .strong()
-                            .size(11.0),
-                    );
-                } else if let Some(first_event) = immediate_events.first() {
-                    let remaining = first_event.remaining_seconds(current_time);
-                    let status = first_event.status(current_time);
-                    let names: Vec<&str> = immediate_events.iter().map(|e| e.kind.display_name()).collect();
-                    let label_names = names.join(" + ");
-
-                    if status == EventStatus::Warning {
-                        ui.label(
-                            RichText::new(format!("✦ ¡ROTACIÓN! {} en {}s{}", label_names, remaining, extra_tokens_str))
-                                .color(Color32::from_rgb(251, 146, 60))
-                                .strong()
-                                .size(11.0),
-                        );
-                    } else {
-                        let rem_min = remaining / 60;
-                        let rem_sec = remaining % 60;
-                        let target_str = format_time_mmss(first_event.target_time);
-
-                        ui.label(
-                            RichText::new(format!("✦ {} {} ({:02}:{:02}){}", target_str, label_names, rem_min, rem_sec, extra_tokens_str))
-                                .color(Color32::from_rgb(226, 232, 240))
-                                .size(11.0),
-                        );
-                    }
-                } else {
-                    ui.label(
-                        RichText::new(format!("✦ Sin eventos pendientes{}", extra_tokens_str))
-                            .color(Color32::from_rgb(148, 163, 184))
-                            .size(11.0),
-                    );
-                }
-            }
-
-            // 3. FILA MEDIA 2: Vista Previa del Siguiente Hito (Transición Suave)
-            if is_game_running {
-                if let Some(next) = next_event {
-                    let rem = next.remaining_seconds(current_time);
-                    let rem_min = rem / 60;
-                    let rem_sec = rem % 60;
-                    let target_str = format_time_mmss(next.target_time);
-
-                    ui.label(
-                        RichText::new(format!("▸ Sig: {} {} (en {:02}:{:02})", target_str, next.kind.display_name(), rem_min, rem_sec))
-                            .color(Color32::from_rgb(148, 163, 184))
-                            .size(10.0),
-                    );
-                }
-            }
-
-            // 4. FILA INFERIOR: Micro Barra de Progreso (2px)
-            if is_game_running {
-                if let Some(first_event) = immediate_events.first() {
-                    let progress = first_event.progress(current_time);
-                    let status = first_event.status(current_time);
-                    let bar_color = if status == EventStatus::Active {
-                        Color32::from_rgb(72, 239, 128)
-                    } else if status == EventStatus::Warning {
-                        Color32::from_rgb(251, 146, 60)
-                    } else {
-                        Color32::from_rgb(245, 158, 11) // Soul gold
-                    };
-
-                    ui.add_space(2.0);
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, Rounding::same(1.0), Color32::from_rgb(22, 27, 34));
-                    let filled_width = (rect.width() * progress).clamp(0.0, rect.width());
-                    let filled_rect = egui::Rect::from_min_size(rect.min, Vec2::new(filled_width, rect.height()));
-                    ui.painter().rect_filled(filled_rect, Rounding::same(1.0), bar_color);
-                }
-            } else {
-                ui.add_space(2.0);
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, Rounding::same(1.0), Color32::from_rgb(22, 27, 34));
-            }
-
-            // 5. MENÚ DESPLEGABLE DE SELECCIÓN MANUAL DE HÉROE (Solo en modo interactivo)
-            if self.hero_menu_open && is_interactive {
+            // 3. MAIN BODY: Config Drawer OR Vertical Option A Layout
+            if self.config_menu_open && is_interactive {
                 ui.add_space(4.0);
                 ui.separator();
                 ui.label(
-                    RichText::new("Seleccionar Héroe:")
-                        .size(10.5)
-                        .color(Color32::from_rgb(148, 163, 184)),
+                    RichText::new("Configuración de Teclas")
+                        .strong()
+                        .size(11.0)
+                        .color(Color32::from_rgb(245, 158, 11)),
                 );
+                ui.add_space(3.0);
 
-                egui::ScrollArea::vertical()
-                    .max_height(105.0)
-                    .show(ui, |ui| {
-                        // Option to reset back to Auto-detection
-                        let is_auto = hero_info.source == HeroSelectionSource::Auto;
-                        if ui.selectable_label(is_auto, "✦ Auto (Detectar)").clicked() {
-                            self.hero_tracker.reset_to_auto();
-                            self.config.last_hero.clear();
-                            let _ = self.config.save_to_file(&self.config_path);
-                            self.hero_menu_open = false;
-                        }
-
-                        ui.separator();
-
-                        // Core heroes list without heap re-allocation
-                        for (_id, name) in get_all_heroes() {
-                            let is_selected = hero_info.source == HeroSelectionSource::Manual && hero_info.display_name == *name;
-                            if ui.selectable_label(is_selected, *name).clicked() {
-                                self.hero_tracker.set_manual_hero(name);
-                                self.config.last_hero = name.to_string();
-                                let _ = self.config.save_to_file(&self.config_path);
-                                self.hero_menu_open = false;
-                            }
-                        }
-                    });
-            }
-
-            // 6. CAJÓN DE BUILDS Y COUNTERS SITUACIONALES (Solo en modo interactivo)
-            if self.build_drawer_open && is_interactive {
-                ui.add_space(4.0);
-                ui.separator();
-                let hero_name = if hero_info.display_name == "None" {
-                    "General / Adaptable"
-                } else {
-                    hero_info.display_name.as_str()
-                };
-                let build = crate::builds::get_hero_build(hero_name);
-
+                // Rebind Box Timer
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format!("⚔ Build: {}", build.hero_name))
+                        RichText::new("Ruta Cajas:")
                             .size(10.5)
-                            .strong()
-                            .color(Color32::from_rgb(245, 158, 11)),
+                            .color(Color32::from_rgb(203, 213, 225)),
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close_btn = ui.add(
-                            egui::Button::new(
-                                RichText::new("✕")
-                                    .size(10.0)
-                                    .color(Color32::from_rgb(148, 163, 184)),
-                            )
-                            .frame(false),
-                        );
-                        if close_btn.clicked() {
-                            self.build_drawer_open = false;
-                        }
-                        if close_btn.hovered() {
-                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                        }
-                    });
+                    let btn_text = if self.rebinding == Some(RebindTarget::BoxTimer) {
+                        "Presiona tecla...".to_string()
+                    } else {
+                        key_to_display_name(self.config.key_box_timer)
+                    };
+                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(10.0)));
+                    if btn.clicked() {
+                        self.rebinding = Some(RebindTarget::BoxTimer);
+                    }
                 });
 
-                egui::ScrollArea::vertical()
-                    .max_height(140.0)
-                    .show(ui, |ui| {
-                        // Core Items
-                        ui.label(RichText::new("▸ Core Items:").size(10.0).strong().color(Color32::from_rgb(226, 232, 240)));
+                // Rebind Mid Boss
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Mid Boss:")
+                            .size(10.5)
+                            .color(Color32::from_rgb(203, 213, 225)),
+                    );
+                    let btn_text = if self.rebinding == Some(RebindTarget::MidBoss) {
+                        "Presiona tecla...".to_string()
+                    } else {
+                        key_to_display_name(self.config.key_midboss)
+                    };
+                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(10.0)));
+                    if btn.clicked() {
+                        self.rebinding = Some(RebindTarget::MidBoss);
+                    }
+                });
+
+                // Rebind Interactive Mode Override
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Modo Calibrar:")
+                            .size(10.5)
+                            .color(Color32::from_rgb(203, 213, 225)),
+                    );
+                    let btn_text = if self.rebinding == Some(RebindTarget::Interactive) {
+                        "Presiona tecla...".to_string()
+                    } else {
+                        key_to_display_name(self.config.key_interactive)
+                    };
+                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(10.0)));
+                    if btn.clicked() {
+                        self.rebinding = Some(RebindTarget::Interactive);
+                    }
+                });
+
+                ui.add_space(3.0);
+                ui.label(
+                    RichText::new("(Esc para cancelar rebind)")
+                        .size(9.0)
+                        .color(Color32::from_rgb(148, 163, 184)),
+                );
+            } else {
+                ui.add_space(2.0);
+
+                if !is_game_running {
+                    ui.label(
+                        RichText::new("Esperando a Deadlock...")
+                            .color(Color32::from_rgb(148, 163, 184))
+                            .size(11.0),
+                    );
+                } else {
+                    // Option A: Vertical Grouped Milestone List
+                    if let Some(ref group) = immediate_group {
+                        let header_color = match group.status {
+                            EventStatus::Active => Color32::from_rgb(72, 239, 128),
+                            EventStatus::Warning => Color32::from_rgb(251, 146, 60),
+                            _ => Color32::from_rgb(226, 232, 240),
+                        };
+
+                        let target_str = format_time_mmss(group.target_time);
+                        let header_text = if group.status == EventStatus::Active {
+                            format!("{} (Activo)", target_str)
+                        } else {
+                            let rem = group.remaining_seconds.max(0);
+                            format!("{} (en {:02}:{:02})", target_str, rem / 60, rem % 60)
+                        };
+
                         ui.label(
-                            RichText::new(build.get_items(crate::builds::ItemStage::Core).join(" • "))
-                                .size(9.5)
-                                .color(Color32::from_rgb(245, 158, 11)),
+                            RichText::new(header_text)
+                                .strong()
+                                .size(11.5)
+                                .color(header_color),
                         );
 
-                        ui.add_space(2.0);
-                        // Early & Late
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new("Early:").size(9.0).color(Color32::from_rgb(148, 163, 184)));
-                            ui.label(RichText::new(build.get_items(crate::builds::ItemStage::Early).join(", ")).size(9.0).color(Color32::from_rgb(203, 213, 225)));
-                        });
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new("Late:").size(9.0).color(Color32::from_rgb(148, 163, 184)));
-                            ui.label(RichText::new(build.get_items(crate::builds::ItemStage::Late).join(", ")).size(9.0).color(Color32::from_rgb(203, 213, 225)));
-                        });
-
-                        // Situational Counters
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("▸ Counters Situacionales:").size(10.0).strong().color(Color32::from_rgb(239, 68, 68)));
-                        for counter in build.counters {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(RichText::new(format!("• {}:", counter.threat)).size(9.0).color(Color32::from_rgb(248, 113, 113)));
-                                ui.label(RichText::new(counter.counter).size(9.0).strong().color(Color32::from_rgb(254, 240, 138)))
-                                    .on_hover_text(counter.notes);
+                        // Bulleted list of simultaneous events
+                        for event in &group.events {
+                            ui.horizontal(|ui| {
+                                ui.add_space(4.0);
+                                ui.label(RichText::new("•").size(10.5).color(header_color));
+                                ui.label(
+                                    RichText::new(event.kind.display_name())
+                                        .size(10.5)
+                                        .color(Color32::from_rgb(226, 232, 240)),
+                                );
                             });
                         }
+                    } else {
+                        ui.label(
+                            RichText::new("Sin eventos pendientes")
+                                .color(Color32::from_rgb(148, 163, 184))
+                                .size(11.0),
+                        );
+                    }
+
+                    // Subsequent Milestone Horizon Preview
+                    if let Some(ref next) = next_group {
+                        ui.add_space(2.0);
+                        let nxt_target_str = format_time_mmss(next.target_time);
+                        let rem = next.remaining_seconds.max(0);
+                        let names: Vec<&str> =
+                            next.events.iter().map(|e| e.kind.display_name()).collect();
+                        let names_str = names.join(" · ");
+
+                        ui.label(
+                            RichText::new(format!(
+                                "Siguiente: {} (en {:02}:{:02})",
+                                nxt_target_str,
+                                rem / 60,
+                                rem % 60
+                            ))
+                            .size(9.5)
+                            .color(Color32::from_rgb(148, 163, 184)),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(format!("• {}", names_str))
+                                    .size(9.5)
+                                    .color(Color32::from_rgb(148, 163, 184)),
+                            );
+                        });
+                    }
+
+                    // Divider before fixed bottom farm trackers
+                    ui.add_space(3.0);
+                    ui.separator();
+                    ui.add_space(1.0);
+
+                    // Fixed Bottom Tracker 1: Box Route Tracker
+                    let box_key_name = key_to_display_name(self.config.key_box_timer);
+                    let box_rem = self.scheduler.boxes.get_remaining(current_time);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("Ruta Cajas [{}]:", box_key_name))
+                                .size(10.0)
+                                .color(Color32::from_rgb(203, 213, 225)),
+                        );
+                        if let Some(rem) = box_rem {
+                            if rem == 0 {
+                                ui.label(
+                                    RichText::new("Listo")
+                                        .strong()
+                                        .size(10.0)
+                                        .color(Color32::from_rgb(72, 239, 128)),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new(format!("{:02}:{:02}", rem / 60, rem % 60))
+                                        .strong()
+                                        .size(10.0)
+                                        .color(Color32::from_rgb(245, 158, 11)),
+                                );
+                            }
+                        } else {
+                            ui.label(
+                                RichText::new("Listo")
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(100, 116, 139)),
+                            );
+                        }
                     });
+
+                    // Fixed Bottom Tracker 2: Mid Boss Tracker
+                    let boss_key_name = key_to_display_name(self.config.key_midboss);
+                    let boss_respawn = self.scheduler.midboss.get_active_respawn(current_time);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("Mid Boss [{}]:", boss_key_name))
+                                .size(10.0)
+                                .color(Color32::from_rgb(203, 213, 225)),
+                        );
+                        if let Some(respawn) = boss_respawn {
+                            let rem = respawn.saturating_sub(current_time);
+                            if rem == 0 {
+                                ui.label(
+                                    RichText::new("Listo")
+                                        .strong()
+                                        .size(10.0)
+                                        .color(Color32::from_rgb(72, 239, 128)),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new(format!("{:02}:{:02}", rem / 60, rem % 60))
+                                        .strong()
+                                        .size(10.0)
+                                        .color(Color32::from_rgb(251, 146, 60)),
+                                );
+                            }
+                        } else {
+                            ui.label(
+                                RichText::new("Listo")
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(100, 116, 139)),
+                            );
+                        }
+                    });
+                }
             }
         });
 
-        // Fast repaint in calibration mode; low CPU (200ms) in ghost mode
+        // Fast repaint in calibration/config mode; low CPU (200ms) in ghost mode
         if is_interactive {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else {

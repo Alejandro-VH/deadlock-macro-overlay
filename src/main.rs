@@ -269,7 +269,7 @@ fn main() -> eframe::Result<()> {
             .with_resizable(false)
             .with_maximize_button(false)
             .with_minimize_button(false)
-            .with_inner_size([250.0, 64.0])
+            .with_inner_size([240.0, 140.0])
             .with_position([config.win_x as f32, config.win_y as f32]),
         ..Default::default()
     };
@@ -316,11 +316,15 @@ impl eframe::App for AppWrapper {
             match cmd {
                 AppCommand::ToggleBoxTimer => {
                     let now = self.inner.clock.current_seconds();
-                    self.inner.scheduler.boxes.toggle(now);
+                    if self.inner.scheduler.boxes.toggle(now) {
+                        self.inner.audio.play_box_start();
+                    }
                 }
                 AppCommand::ToggleMidBoss => {
                     let now = self.inner.clock.current_seconds();
-                    self.inner.scheduler.midboss.toggle_kill(now);
+                    if self.inner.scheduler.midboss.toggle_kill(now) {
+                        self.inner.audio.play_boss_start();
+                    }
                 }
                 AppCommand::ResetMatch => self.inner.reset_match(),
             }
