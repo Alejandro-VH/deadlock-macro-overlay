@@ -4,7 +4,8 @@ pub enum EventKind {
     BridgeBuffs,
     SoulUrn,
     SinnersSacrifice,
-    MidBoss,
+    MidBossSpawn,  // Initial appearance at 10:00
+    MidBossRespawn, // Respawn countdown after kill
 }
 
 impl EventKind {
@@ -13,7 +14,8 @@ impl EventKind {
             EventKind::BridgeBuffs => "Bridge Buffs",
             EventKind::SoulUrn => "Soul Urn",
             EventKind::SinnersSacrifice => "Sinner's Sacrifice",
-            EventKind::MidBoss => "Mid Boss",
+            EventKind::MidBossSpawn => "Mid Boss Spawn",
+            EventKind::MidBossRespawn => "Mid Boss Respawn",
         }
     }
 }
@@ -101,7 +103,7 @@ impl MacroScheduler {
     pub fn calculate_events(&self, current_seconds: u32) -> Vec<MacroEvent> {
         let mut events = Vec::new();
 
-        // 1. Bridge Buffs (First spawn at 300s / 05:00, then every 300s)
+        // 1. Bridge Buffs (First spawn at 300s / 05:00, then every 300s: 10:00, 15:00, 20:00...)
         let bridge_target = if current_seconds < 300 {
             300
         } else {
@@ -117,7 +119,7 @@ impl MacroScheduler {
             target_time: bridge_target,
         });
 
-        // 2. Soul Urn (First spawn at 600s / 10:00, then every 300s)
+        // 2. Soul Urn (First spawn at 600s / 10:00, then every 300s: 15:00, 20:00, 25:00...)
         let urn_target = if current_seconds < 600 {
             600
         } else {
@@ -133,7 +135,7 @@ impl MacroScheduler {
             target_time: urn_target,
         });
 
-        // 3. Sinner's Sacrifice (Single event at 480s / 08:00, vanishes after 10s grace period)
+        // 3. Sinner's Sacrifice (Single initial event at 480s / 08:00, vanishes after 10s grace period)
         if current_seconds <= 490 {
             events.push(MacroEvent {
                 kind: EventKind::SinnersSacrifice,
@@ -141,10 +143,18 @@ impl MacroScheduler {
             });
         }
 
-        // 4. Mid Boss (if tracked and actively counting down or within 10s grace)
+        // 4. Mid Boss Initial Spawn at 10:00 (600s) if never killed yet
+        if self.midboss.kills == 0 && current_seconds <= 610 {
+            events.push(MacroEvent {
+                kind: EventKind::MidBossSpawn,
+                target_time: 600,
+            });
+        }
+
+        // 5. Mid Boss Respawn (if manually recorded with F9 and actively counting down)
         if let Some(respawn) = self.midboss.get_active_respawn(current_seconds) {
             events.push(MacroEvent {
-                kind: EventKind::MidBoss,
+                kind: EventKind::MidBossRespawn,
                 target_time: respawn,
             });
         }
@@ -152,6 +162,20 @@ impl MacroScheduler {
         // Sort events chronologically by target_time
         events.sort_by_key(|e| e.target_time);
         events
+    }
+
+    /// Returns only the immediate next active or upcoming event(s) sharing the earliest target time.
+    pub fn get_immediate_next_events(&self, current_seconds: u32) -> Vec<MacroEvent> {
+        let all_events = self.calculate_events(current_seconds);
+        if let Some(first) = all_events.first() {
+            let earliest_time = first.target_time;
+            all_events
+                .into_iter()
+                .filter(|e| e.target_time == earliest_time)
+                .collect()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -205,7 +229,6 @@ impl ClockFilter {
             } else {
                 self.pending_candidate = Some(raw);
                 self.consecutive_reads = 0;
-                // No double increment here; tick_second will handle elapsed time
             }
         }
         false

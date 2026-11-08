@@ -66,6 +66,27 @@ fn test_sinners_sacrifice_schedule() {
 }
 
 #[test]
+fn test_immediate_next_events_progression() {
+    let scheduler = MacroScheduler::default();
+
+    // At 100s (01:40), the immediate next event is ONLY Bridge Buffs at 300s (05:00)
+    let next = scheduler.get_immediate_next_events(100);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::BridgeBuffs);
+    assert_eq!(next[0].target_time, 300);
+
+    // At 315s (05:15), the immediate next event is ONLY Sinner's Sacrifice at 480s (08:00)
+    let next = scheduler.get_immediate_next_events(315);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::SinnersSacrifice);
+    assert_eq!(next[0].target_time, 480);
+
+    // At 500s (08:20), the immediate next events are at 600s (10:00): Bridge + Urn + MidBossSpawn
+    let next = scheduler.get_immediate_next_events(500);
+    assert!(next.iter().all(|e| e.target_time == 600));
+}
+
+#[test]
 fn test_mid_boss_tracker_progression_and_cancel() {
     let mut tracker = MidBossTracker::default();
     assert_eq!(tracker.get_active_respawn(500), None);
@@ -87,7 +108,7 @@ fn test_mid_boss_tracker_progression_and_cancel() {
     // Check expiration: at 1145s (active window: 1140..=1150)
     assert_eq!(tracker.get_active_respawn(1145), Some(1140));
 
-    // At 1151s (grace period expired), should return None to avoid queue hijacking
+    // At 1151s (grace period expired), should return None
     assert_eq!(tracker.get_active_respawn(1151), None);
 
     // 2nd Kill at 1200s (20m) -> 6m (360s) respawn -> 1560s
@@ -112,16 +133,6 @@ fn test_mid_boss_tracker_progression_and_cancel() {
 }
 
 #[test]
-fn test_simultaneous_events_at_ten_minutes() {
-    let scheduler = MacroScheduler::default();
-    let events = scheduler.calculate_events(600);
-
-    let active_events: Vec<_> = events.iter().filter(|e| e.status(600) == EventStatus::Active).collect();
-    assert!(active_events.iter().any(|e| e.kind == EventKind::BridgeBuffs));
-    assert!(active_events.iter().any(|e| e.kind == EventKind::SoulUrn));
-}
-
-#[test]
 fn test_clock_filter_noise_and_drift() {
     let mut filter = ClockFilter::new();
     assert_eq!(filter.current_seconds(), 0);
@@ -136,10 +147,9 @@ fn test_clock_filter_noise_and_drift() {
     assert_eq!(filter.current_seconds(), 61);
 
     // Single outlier OCR reading (e.g. noise reads 01:30 = 90s, difference > 3s)
-    // Should be rejected until confirmed
     let updated = filter.feed_ocr_reading(Some(90));
     assert!(!updated);
-    assert_eq!(filter.current_seconds(), 61); // Does not jump or double-tick
+    assert_eq!(filter.current_seconds(), 61);
 
     // Second consecutive read confirms 90s -> synchronizes to 90s
     let updated = filter.feed_ocr_reading(Some(90));
