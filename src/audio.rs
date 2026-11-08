@@ -8,8 +8,12 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoundAlert {
-    Warning30s,  // Gentle two-note harmonic chime (G4 -> B4)
-    ActiveSpawn, // Warm ascending triad arpeggio (C5 -> E5 -> G5)
+    Warning30s,     // Gentle two-note harmonic chime (G4 -> B4)
+    ActiveSpawn,    // Warm ascending triad arpeggio (C5 -> E5 -> G5)
+    BoxTimerStart,  // Short gentle rising confirmation chime (C5 -> E5, 60ms)
+    BoxTimerReady,  // Distinct sweet double chime for crate cluster respawn (E5 -> G5)
+    BossTimerStart, // Deep subtle resonance for Mid Boss kill registration
+    BossTimerReady, // Harmonic alert for Mid Boss respawn
 }
 
 /// Dispatches harmonic, low-volume chime audio alerts on a dedicated non-blocking thread.
@@ -103,6 +107,61 @@ impl AudioNotifier {
                             sink.append(n3);
                             sink.sleep_until_end();
                         }
+                        SoundAlert::BoxTimerStart => {
+                            // Short pleasant rising chime (C5 -> E5, 60ms) confirming key press
+                            let n1 = SineWave::new(523.25)
+                                .take_duration(Duration::from_millis(40))
+                                .fade_in(Duration::from_millis(5))
+                                .amplify(0.035);
+                            let n2 = SineWave::new(659.25)
+                                .take_duration(Duration::from_millis(60))
+                                .fade_in(Duration::from_millis(5))
+                                .amplify(0.04);
+                            sink.append(n1);
+                            sink.append(n2);
+                            sink.sleep_until_end();
+                        }
+                        SoundAlert::BoxTimerReady => {
+                            // Distinct double chime for ready box respawn (E5 -> G5)
+                            let n1 = SineWave::new(659.25)
+                                .take_duration(Duration::from_millis(80))
+                                .fade_in(Duration::from_millis(10))
+                                .amplify(0.04);
+                            let pause = SineWave::new(0.0)
+                                .take_duration(Duration::from_millis(30))
+                                .amplify(0.0);
+                            let n2 = SineWave::new(783.99)
+                                .take_duration(Duration::from_millis(120))
+                                .fade_in(Duration::from_millis(10))
+                                .amplify(0.045);
+                            sink.append(n1);
+                            sink.append(pause);
+                            sink.append(n2);
+                            sink.sleep_until_end();
+                        }
+                        SoundAlert::BossTimerStart => {
+                            // Deeper subtle tone (E4, 329.63 Hz)
+                            let n1 = SineWave::new(329.63)
+                                .take_duration(Duration::from_millis(120))
+                                .fade_in(Duration::from_millis(15))
+                                .amplify(0.04);
+                            sink.append(n1);
+                            sink.sleep_until_end();
+                        }
+                        SoundAlert::BossTimerReady => {
+                            // Low-mid harmonic chime (E4 -> G4)
+                            let n1 = SineWave::new(329.63)
+                                .take_duration(Duration::from_millis(90))
+                                .fade_in(Duration::from_millis(10))
+                                .amplify(0.04);
+                            let n2 = SineWave::new(392.0)
+                                .take_duration(Duration::from_millis(150))
+                                .fade_in(Duration::from_millis(10))
+                                .amplify(0.045);
+                            sink.append(n1);
+                            sink.append(n2);
+                            sink.sleep_until_end();
+                        }
                     }
                 }
             });
@@ -150,6 +209,42 @@ impl AudioNotifier {
         }
         if let Some(ref tx) = self.tx {
             let _ = tx.send(SoundAlert::ActiveSpawn);
+        }
+    }
+
+    pub fn play_box_start(&self) {
+        if self.is_muted() {
+            return;
+        }
+        if let Some(ref tx) = self.tx {
+            let _ = tx.send(SoundAlert::BoxTimerStart);
+        }
+    }
+
+    pub fn play_box_ready(&self) {
+        if self.is_muted() {
+            return;
+        }
+        if let Some(ref tx) = self.tx {
+            let _ = tx.send(SoundAlert::BoxTimerReady);
+        }
+    }
+
+    pub fn play_boss_start(&self) {
+        if self.is_muted() {
+            return;
+        }
+        if let Some(ref tx) = self.tx {
+            let _ = tx.send(SoundAlert::BossTimerStart);
+        }
+    }
+
+    pub fn play_boss_ready(&self) {
+        if self.is_muted() {
+            return;
+        }
+        if let Some(ref tx) = self.tx {
+            let _ = tx.send(SoundAlert::BossTimerReady);
         }
     }
 }
