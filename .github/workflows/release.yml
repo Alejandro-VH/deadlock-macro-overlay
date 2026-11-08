@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run test suite
+        run: cargo test
+
+      - name: Build optimized release binary
+        run: cargo build --release
+
+      - name: Package release archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path staging -Force
+          Copy-Item target/release/DeadlockMacroOverlay.exe staging/
+          if (Test-Path README.md) { Copy-Item README.md staging/ }
+          if (Test-Path LICENSE) { Copy-Item LICENSE staging/ }
+          Compress-Archive -Path staging/* -DestinationPath DeadlockMacroOverlay-windows-x64.zip -Force
+          $hash = (Get-FileHash -Path DeadlockMacroOverlay-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  DeadlockMacroOverlay-windows-x64.zip" | Out-File -FilePath SHA256SUMS.txt -Encoding utf8
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            DeadlockMacroOverlay-windows-x64.zip
+            SHA256SUMS.txt
+          generate_release_notes: true
