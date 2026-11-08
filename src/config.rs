@@ -181,6 +181,31 @@ impl OverlayConfig {
         Self::resolve_config_path_from_env(std::env::var_os("APPDATA").as_deref())
     }
 
+    /// Clamps physical window coordinates given explicit physical window dimensions.
+    pub fn clamp_to_screen_with_size(
+        &mut self,
+        screen_width: i32,
+        screen_height: i32,
+        win_phys_width: i32,
+        win_phys_height: i32,
+    ) {
+        let max_x = (screen_width - win_phys_width.max(280)).max(0);
+        let max_y = (screen_height - win_phys_height.max(120)).max(0);
+        self.win_x = self.win_x.clamp(0, max_x);
+        self.win_y = self.win_y.clamp(0, max_y);
+    }
+
+    /// Clamps physical window coordinates so the overlay remains visible inside the primary monitor.
+    pub fn clamp_to_screen(&mut self, screen_width: i32, screen_height: i32) {
+        self.clamp_to_screen_with_size(screen_width, screen_height, 280, 120);
+    }
+
+    /// Converts physical pixel coordinates (`win_x`, `win_y`) into egui logical points for a given DPI scale.
+    pub fn logical_position(&self, pixels_per_point: f32) -> (f32, f32) {
+        let ppp = pixels_per_point.max(0.5);
+        (self.win_x as f32 / ppp, self.win_y as f32 / ppp)
+    }
+
     /// Loads existing configuration from disk or automatically initializes default settings on first run.
     pub fn load_or_create<P: AsRef<Path>>(
         path: P,
@@ -189,12 +214,20 @@ impl OverlayConfig {
     ) -> Self {
         let p = path.as_ref();
         if p.exists() {
-            Self::load_from_file(p, fallback_width, fallback_height)
+            let mut config = Self::load_from_file(p, fallback_width, fallback_height);
+            let orig_x = config.win_x;
+            let orig_y = config.win_y;
+            config.clamp_to_screen(fallback_width, fallback_height);
+            if config.win_x != orig_x || config.win_y != orig_y {
+                let _ = config.save_to_file(p);
+            }
+            config
         } else {
             if let Some(parent) = p.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let config = Self::default_for_resolution(fallback_width, fallback_height);
+            let mut config = Self::default_for_resolution(fallback_width, fallback_height);
+            config.clamp_to_screen(fallback_width, fallback_height);
             let _ = config.save_to_file(p);
             config
         }

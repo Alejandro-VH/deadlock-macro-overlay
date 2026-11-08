@@ -81,6 +81,10 @@ pub struct DeadlockApp {
     pub current_window_size: Option<Vec2>,
     pub last_applied_scale: f32,
     pub last_applied_ppp: f32,
+    pub screen_w: i32,
+    pub screen_h: i32,
+    pub position_synced: bool,
+    pub was_dragged: bool,
 }
 
 impl DeadlockApp {
@@ -118,6 +122,10 @@ impl DeadlockApp {
             current_window_size: None,
             last_applied_scale: initial_scale,
             last_applied_ppp: 1.0,
+            screen_w: 1920,
+            screen_h: 1080,
+            position_synced: false,
+            was_dragged: false,
         }
     }
 
@@ -187,12 +195,15 @@ impl DeadlockApp {
     }
 
     pub fn reload_config(&mut self, screen_w: i32, screen_h: i32) {
-        self.config = OverlayConfig::load_from_file(&self.config_path, screen_w, screen_h);
+        self.screen_w = screen_w;
+        self.screen_h = screen_h;
+        self.config = OverlayConfig::load_or_create(&self.config_path, screen_w, screen_h);
         if !self.config.last_hero.is_empty() && self.config.last_hero != "Auto" {
             self.hero_tracker.set_manual_hero(&self.config.last_hero);
         }
         self.audio.set_muted(self.config.is_muted);
         self.current_window_size = None;
+        self.position_synced = false;
     }
 }
 
@@ -306,6 +317,21 @@ impl eframe::App for DeadlockApp {
             None => false,
         };
 
+        let phys_w = (target_size.x * ppp).ceil() as i32;
+        let phys_h = (target_size.y * ppp).ceil() as i32;
+
+        if !self.position_synced || scale_changed || ppp_changed {
+            let orig_x = self.config.win_x;
+            let orig_y = self.config.win_y;
+            self.config.clamp_to_screen_with_size(self.screen_w, self.screen_h, phys_w, phys_h);
+            if self.config.win_x != orig_x || self.config.win_y != orig_y {
+                let _ = self.config.save_to_file(&self.config_path);
+            }
+            let (lx, ly) = self.config.logical_position(ppp);
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(lx, ly)));
+            self.position_synced = true;
+        }
+
         if self.current_window_size != Some(target_size) || scale_changed || ppp_changed || size_desynced {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
             self.current_window_size = Some(target_size);
@@ -382,6 +408,7 @@ impl eframe::App for DeadlockApp {
                     ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grab);
                 }
                 if clock_resp.drag_started_by(egui::PointerButton::Primary) {
+                    self.was_dragged = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
 
@@ -497,6 +524,7 @@ impl eframe::App for DeadlockApp {
                             ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grab);
                         }
                         if drag_area.drag_started_by(egui::PointerButton::Primary) {
+                            self.was_dragged = true;
                             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
                     }
@@ -715,16 +743,21 @@ impl eframe::App for DeadlockApp {
             }
         });
 
-        // Persist window position after native dragging
-        if let Some(outer) = ctx.input(|i| i.viewport().outer_rect) {
-            let ppp = ctx.pixels_per_point();
-            let cur_x = (outer.min.x * ppp).round() as i32;
-            let cur_y = (outer.min.y * ppp).round() as i32;
+        // Persist window position only after an explicit user drag completes
+        if self.was_dragged {
             let pointer_down = ctx.input(|i| i.pointer.primary_down());
-            if !pointer_down && (cur_x != self.config.win_x || cur_y != self.config.win_y) {
-                self.config.win_x = cur_x;
-                self.config.win_y = cur_y;
-                let _ = self.config.save_to_file(&self.config_path);
+            if !pointer_down {
+                if let Some(outer) = ctx.input(|i| i.viewport().outer_rect) {
+                    let cur_x = (outer.min.x * ppp).round() as i32;
+                    let cur_y = (outer.min.y * ppp).round() as i32;
+                    if cur_x > -10000 && cur_y > -10000 {
+                        self.config.win_x = cur_x;
+                        self.config.win_y = cur_y;
+                        self.config.clamp_to_screen_with_size(self.screen_w, self.screen_h, phys_w, phys_h);
+                        let _ = self.config.save_to_file(&self.config_path);
+                    }
+                }
+                self.was_dragged = false;
             }
         }
 

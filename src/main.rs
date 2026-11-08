@@ -10,12 +10,13 @@ use std::thread;
 use std::time::Duration;
 use windows::core::w;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSX};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_TAB};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
-    GetWindowTextW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
-    WS_MAXIMIZEBOX, WS_THICKFRAME,
+    GetWindowTextW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST,
+    SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
 
 const WINDOW_TITLE: &str = "DeadlockMacroOverlay";
@@ -36,12 +37,12 @@ fn apply_click_through(hwnd: HWND, click_through: bool) {
             let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
             let _ = SetWindowPos(
                 hwnd,
-                HWND(std::ptr::null_mut()),
+                HWND_TOPMOST,
                 0,
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
         }
     }
@@ -195,6 +196,19 @@ fn main() -> eframe::Result<()> {
                             .unwrap_or(HWND(std::ptr::null_mut()));
                         if !cached_hwnd.0.is_null() {
                             strip_snap_styles(cached_hwnd);
+                            let (init_x, init_y) = {
+                                let cfg = config_clone.read().unwrap();
+                                (cfg.win_x, cfg.win_y)
+                            };
+                            let _ = SetWindowPos(
+                                cached_hwnd,
+                                HWND_TOPMOST,
+                                init_x,
+                                init_y,
+                                0,
+                                0,
+                                SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            );
                             apply_click_through(cached_hwnd, true);
                         }
                     }
@@ -288,7 +302,20 @@ fn main() -> eframe::Result<()> {
         })
         .expect("Failed to spawn OCR thread");
 
-    // 6. Native eframe window configuration
+    // 6. Native eframe window configuration (convert physical win_x/win_y to logical points using primary DPI)
+    let dpi_scale = unsafe {
+        let hdc = GetDC(HWND(std::ptr::null_mut()));
+        let dpi = if !hdc.0.is_null() {
+            let d = GetDeviceCaps(hdc, LOGPIXELSX);
+            let _ = ReleaseDC(HWND(std::ptr::null_mut()), hdc);
+            d
+        } else {
+            96
+        };
+        if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 }
+    };
+    let (init_lx, init_ly) = config.logical_position(dpi_scale);
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(WINDOW_TITLE)
@@ -299,7 +326,7 @@ fn main() -> eframe::Result<()> {
             .with_maximize_button(false)
             .with_minimize_button(false)
             .with_inner_size([260.0, 185.0])
-            .with_position([config.win_x as f32, config.win_y as f32]),
+            .with_position([init_lx, init_ly]),
         ..Default::default()
     };
 
@@ -307,13 +334,15 @@ fn main() -> eframe::Result<()> {
         WINDOW_TITLE,
         native_options,
         Box::new(move |_cc| {
-            let app = DeadlockApp::new(
+            let mut app = DeadlockApp::new(
                 config,
                 config_path.to_string_lossy().into_owned(),
                 interactive_flag,
                 game_running_flag,
                 ocr_rx,
             );
+            app.screen_w = screen_w;
+            app.screen_h = screen_h;
 
             // Wrap app to process commands from hotkey listener
             Ok(Box::new(AppWrapper {

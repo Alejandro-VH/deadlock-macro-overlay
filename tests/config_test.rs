@@ -171,3 +171,38 @@ fn test_load_or_create_generates_file_in_nested_directory_on_first_run() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+
+#[test]
+fn test_load_or_create_clamps_offscreen_dpi_coordinates_to_visible_monitor() {
+    let mut test_path = std::env::temp_dir();
+    test_path.push("test_deadlock_config_offscreen_dpi.cfg");
+
+    // Simulate a config corrupted by 150% DPI scaling multiplication (e.g. 1620 * 1.5 = 2430 on 1920x1080)
+    let mut offscreen = OverlayConfig::default_for_resolution(1920, 1080);
+    offscreen.win_x = 2430;
+    offscreen.win_y = -32000; // Windows minimized coordinate
+    offscreen.save_to_file(&test_path).expect("Failed to save offscreen config");
+
+    let loaded = OverlayConfig::load_or_create(&test_path, 1920, 1080);
+    assert!(
+        loaded.win_x >= 0 && loaded.win_x <= 1920 - 280,
+        "win_x ({}) must be clamped inside visible 1920 width",
+        loaded.win_x
+    );
+    assert!(
+        loaded.win_y >= 0 && loaded.win_y <= 1080 - 120,
+        "win_y ({}) must be clamped inside visible 1080 height",
+        loaded.win_y
+    );
+
+    let _ = fs::remove_file(test_path);
+}
+
+#[test]
+fn test_logical_position_compensates_for_dpi_scaling() {
+    let cfg = OverlayConfig::default_for_resolution(1920, 1080); // win_x = 1620, win_y = 100
+    let (lx, ly) = cfg.logical_position(1.25);
+    assert!(((lx * 1.25) - 1620.0).abs() < 0.1);
+    assert!(((ly * 1.25) - 100.0).abs() < 0.1);
+}
