@@ -184,6 +184,15 @@ impl DeadlockApp {
         self.last_box_rem = None;
         self.last_boss_rem = None;
     }
+
+    pub fn reload_config(&mut self, screen_w: i32, screen_h: i32) {
+        self.config = OverlayConfig::load_from_file(&self.config_path, screen_w, screen_h);
+        if !self.config.last_hero.is_empty() && self.config.last_hero != "Auto" {
+            self.hero_tracker.set_manual_hero(&self.config.last_hero);
+        }
+        self.audio.set_muted(self.config.is_muted);
+        self.current_window_size = None;
+    }
 }
 
 impl eframe::App for DeadlockApp {
@@ -381,6 +390,7 @@ impl eframe::App for DeadlockApp {
                             .frame(false),
                         );
                         if close_btn.clicked() {
+                            crate::tray::remove_tray_icon();
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                         if close_btn.hovered() {
@@ -597,7 +607,7 @@ impl eframe::App for DeadlockApp {
 
                 ui.add_space(2.0);
                 ui.label(
-                    RichText::new("(Esc para cancelar rebind)")
+                    RichText::new("Esc para cancelar")
                         .size(8.5)
                         .color(Color32::from_rgb(148, 163, 184)),
                 );

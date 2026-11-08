@@ -19,7 +19,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const WINDOW_TITLE: &str = "DeadlockMacroOverlay";
-const CONFIG_FILE: &str = "deadlock_overlay.cfg";
 
 /// Adjusts the Win32 WS_EX_TRANSPARENT extended style to toggle mouse click-through with SWP_FRAMECHANGED.
 fn apply_click_through(hwnd: HWND, click_through: bool) {
@@ -127,6 +126,14 @@ fn is_deadlock_game_running() -> bool {
 }
 
 fn main() -> eframe::Result<()> {
+    // 0. Acquire passive Single-Instance lock
+    let _instance_guard = match deadlock_overlay::tray::acquire_single_instance_lock(
+        "Local\\DeadlockMacroOverlay_SingleInstance",
+    ) {
+        Some(guard) => guard,
+        None => return Ok(()),
+    };
+
     // 1. Detect screen resolution for default layout
     let (screen_w, screen_h) = unsafe {
         let w = GetSystemMetrics(SM_CXSCREEN);
@@ -134,7 +141,8 @@ fn main() -> eframe::Result<()> {
         (if w > 0 { w } else { 1920 }, if h > 0 { h } else { 1080 })
     };
 
-    let config = OverlayConfig::load_from_file(CONFIG_FILE, screen_w, screen_h);
+    let config_path = OverlayConfig::resolve_config_path();
+    let config = OverlayConfig::load_or_create(&config_path, screen_w, screen_h);
     let interactive_flag = Arc::new(AtomicBool::new(false)); // Start in ghost (click-through) mode
     let manual_override_flag = Arc::new(AtomicBool::new(false));
     let game_running_flag = Arc::new(AtomicBool::new(false));
@@ -143,6 +151,29 @@ fn main() -> eframe::Result<()> {
     // 2. Setup channels
     let (ocr_tx, ocr_rx) = channel::<Option<u32>>();
     let (app_cmd_tx, app_cmd_rx) = channel::<AppCommand>();
+
+    // 2b. Setup native System Tray bridge
+    let (tray_tx, tray_rx) = channel::<deadlock_overlay::tray::TrayAction>();
+    let cmd_tx_tray = app_cmd_tx.clone();
+    thread::Builder::new()
+        .name("tray_bridge".into())
+        .spawn(move || {
+            while let Ok(action) = tray_rx.recv() {
+                match action {
+                    deadlock_overlay::tray::TrayAction::ResetMatch => {
+                        let _ = cmd_tx_tray.send(AppCommand::ResetMatch);
+                    }
+                    deadlock_overlay::tray::TrayAction::ReloadConfig => {
+                        let _ = cmd_tx_tray.send(AppCommand::ReloadConfig);
+                    }
+                    deadlock_overlay::tray::TrayAction::ExitApp => {
+                        let _ = cmd_tx_tray.send(AppCommand::ExitApp);
+                    }
+                }
+            }
+        })
+        .expect("Failed to spawn tray bridge thread");
+    let _tray_thread = deadlock_overlay::tray::spawn_system_tray(tray_tx);
 
     // 3. Background Input & In-Game Tab Passthrough thread (Window-scoped passive polling)
     let flag_clone = Arc::clone(&interactive_flag);
@@ -285,7 +316,7 @@ fn main() -> eframe::Result<()> {
         Box::new(move |_cc| {
             let app = DeadlockApp::new(
                 config,
-                CONFIG_FILE.to_string(),
+                config_path.to_string_lossy().into_owned(),
                 interactive_flag,
                 game_running_flag,
                 ocr_rx,
@@ -296,6 +327,8 @@ fn main() -> eframe::Result<()> {
                 inner: app,
                 cmd_rx: app_cmd_rx,
                 roi_sync: roi_config,
+                screen_w,
+                screen_h,
             }))
         }),
     )
@@ -305,14 +338,17 @@ fn main() -> eframe::Result<()> {
 enum AppCommand {
     ToggleBoxTimer,
     ToggleMidBoss,
-    #[allow(dead_code)]
     ResetMatch,
+    ReloadConfig,
+    ExitApp,
 }
 
 struct AppWrapper {
     inner: DeadlockApp,
     cmd_rx: std::sync::mpsc::Receiver<AppCommand>,
     roi_sync: Arc<std::sync::RwLock<OverlayConfig>>,
+    screen_w: i32,
+    screen_h: i32,
 }
 
 impl eframe::App for AppWrapper {
@@ -332,6 +368,11 @@ impl eframe::App for AppWrapper {
                     }
                 }
                 AppCommand::ResetMatch => self.inner.reset_match(),
+                AppCommand::ReloadConfig => self.inner.reload_config(self.screen_w, self.screen_h),
+                AppCommand::ExitApp => {
+                    deadlock_overlay::tray::remove_tray_icon();
+                    ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+                }
             }
         }
 
