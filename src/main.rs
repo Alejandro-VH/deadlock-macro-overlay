@@ -3,7 +3,7 @@
 use deadlock_overlay::app::DeadlockApp;
 use deadlock_overlay::config::OverlayConfig;
 use deadlock_overlay::screen_reader::{capture_screen_roi, ScreenOcr};
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::hotkey::{Code, HotKey};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
@@ -12,6 +12,7 @@ use std::thread;
 use std::time::Duration;
 use windows::core::w;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_TAB};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
     GetWindowTextW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN,
@@ -59,11 +60,9 @@ fn is_deadlock_game_foreground(overlay_hwnd: HWND) -> bool {
         let len = GetWindowTextW(hwnd, &mut title);
         if len > 0 {
             let title_str = String::from_utf16_lossy(&title[..len as usize]);
-            // Exclude our overlay window title
             if title_str.contains(WINDOW_TITLE) {
                 return false;
             }
-            // Match the actual Deadlock game window
             if title_str == "Deadlock"
                 || title_str.starts_with("Deadlock ")
                 || title_str.contains("project8")
@@ -87,10 +86,10 @@ unsafe extern "system" fn enum_check_deadlock(hwnd: HWND, lparam: LPARAM) -> BOO
         {
             let found = lparam.0 as *mut bool;
             *found = true;
-            return BOOL(0); // Stop enumerating
+            return BOOL(0);
         }
     }
-    BOOL(1) // Continue
+    BOOL(1)
 }
 
 /// 100% passive Win32 query checking if the Deadlock game window currently exists.
@@ -123,21 +122,19 @@ fn main() -> eframe::Result<()> {
     let (ocr_tx, ocr_rx) = channel::<Option<u32>>();
     let (app_cmd_tx, app_cmd_rx) = channel::<AppCommand>();
 
-    // 3. Register Global Hotkeys
+    // 3. Register Global Hotkeys: Single Direct Keys Only (No Shift combos)
     let hotkey_manager = GlobalHotKeyManager::new().ok();
-    let hk_f10 = HotKey::new(None, Code::F10);
-    let hk_shift_f10 = HotKey::new(Some(Modifiers::SHIFT), Code::F10);
+    let hk_f8 = HotKey::new(None, Code::F8);
     let hk_f9 = HotKey::new(None, Code::F9);
-    let hk_shift_f9 = HotKey::new(Some(Modifiers::SHIFT), Code::F9);
+    let hk_f10 = HotKey::new(None, Code::F10);
 
     if let Some(ref manager) = hotkey_manager {
-        let _ = manager.register(hk_f10);
-        let _ = manager.register(hk_shift_f10);
+        let _ = manager.register(hk_f8);
         let _ = manager.register(hk_f9);
-        let _ = manager.register(hk_shift_f9);
+        let _ = manager.register(hk_f10);
     }
 
-    // 4. Background Hotkey listener & Automatic Focus / Click-Through manager thread
+    // 4. Background Hotkey listener & Automatic Focus / In-Game Tab Passthrough thread
     let flag_clone = Arc::clone(&interactive_flag);
     let manual_clone = Arc::clone(&manual_override_flag);
     let cmd_tx_clone = app_cmd_tx.clone();
@@ -159,32 +156,34 @@ fn main() -> eframe::Result<()> {
                     }
                 }
 
-                // Process hotkeys
+                // Process single-key direct hotkeys (No Shift combinations)
                 if let Ok(event) = hotkey_channel.try_recv() {
-                    if event.id == hk_f10.id() {
+                    if event.id == hk_f8.id() {
+                        let _ = cmd_tx_clone.send(AppCommand::ToggleBoxTimer);
+                    } else if event.id == hk_f9.id() {
+                        let _ = cmd_tx_clone.send(AppCommand::ToggleMidBoss);
+                    } else if event.id == hk_f10.id() {
                         let current_override = manual_clone.load(Ordering::Relaxed);
                         manual_clone.store(!current_override, Ordering::Relaxed);
-                    } else if event.id == hk_shift_f10.id() {
-                        let _ = cmd_tx_clone.send(AppCommand::ResetMatch);
-                    } else if event.id == hk_f9.id() {
-                        let _ = cmd_tx_clone.send(AppCommand::MidBossKill);
-                    } else if event.id == hk_shift_f9.id() {
-                        let _ = cmd_tx_clone.send(AppCommand::CancelMidBoss);
                     }
                 }
 
-                // Stable focus check:
-                // Only Deadlock game forces ghost mode. Clicking on our overlay never flips it off!
+                // In-Game Tab Passthrough:
+                // When in Deadlock and holding Tab, the game unlocks the mouse.
+                // We automatically lift WS_EX_TRANSPARENT so the overlay becomes clickable!
                 let in_deadlock = is_deadlock_game_foreground(cached_hwnd);
+                let is_tab_held = in_deadlock && unsafe {
+                    (GetAsyncKeyState(VK_TAB.0 as i32) as u16 & 0x8000) != 0
+                };
                 let manual_force = manual_clone.load(Ordering::Relaxed);
-                let is_interactive = manual_force || !in_deadlock;
+                let is_interactive = manual_force || is_tab_held || !in_deadlock;
 
                 flag_clone.store(is_interactive, Ordering::Relaxed);
                 if !cached_hwnd.0.is_null() {
                     apply_click_through(cached_hwnd, !is_interactive);
                 }
 
-                thread::sleep(Duration::from_millis(60));
+                thread::sleep(Duration::from_millis(50));
             }
         })
         .expect("Failed to spawn focus manager thread");
@@ -231,7 +230,7 @@ fn main() -> eframe::Result<()> {
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
-            .with_inner_size([250.0, 52.0])
+            .with_inner_size([250.0, 64.0])
             .with_position([config.win_x as f32, config.win_y as f32]),
         ..Default::default()
     };
@@ -260,9 +259,10 @@ fn main() -> eframe::Result<()> {
 
 #[derive(Debug, Clone, Copy)]
 enum AppCommand {
+    ToggleBoxTimer,
+    ToggleMidBoss,
+    #[allow(dead_code)]
     ResetMatch,
-    MidBossKill,
-    CancelMidBoss,
 }
 
 struct AppWrapper {
@@ -275,14 +275,15 @@ impl eframe::App for AppWrapper {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         while let Ok(cmd) = self.cmd_rx.try_recv() {
             match cmd {
-                AppCommand::ResetMatch => self.inner.reset_match(),
-                AppCommand::MidBossKill => {
+                AppCommand::ToggleBoxTimer => {
                     let now = self.inner.clock.current_seconds();
-                    self.inner.scheduler.midboss.record_kill(now);
+                    self.inner.scheduler.boxes.toggle(now);
                 }
-                AppCommand::CancelMidBoss => {
-                    self.inner.scheduler.midboss.cancel_kill();
+                AppCommand::ToggleMidBoss => {
+                    let now = self.inner.clock.current_seconds();
+                    self.inner.scheduler.midboss.toggle_kill(now);
                 }
+                AppCommand::ResetMatch => self.inner.reset_match(),
             }
         }
 

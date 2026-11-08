@@ -112,9 +112,12 @@ impl DeadlockApp {
             self.last_tick_instant = Instant::now();
         }
 
-        // Poll Deadlock console.log every 1 second for hero spawn events
+        // Poll Deadlock console.log every 1 second for hero spawns and match disconnect
         if self.last_log_poll_instant.elapsed() >= Duration::from_secs(1) {
-            self.hero_tracker.poll_log();
+            let (_, match_ended) = self.hero_tracker.poll_log_events();
+            if match_ended {
+                self.reset_match();
+            }
             self.last_log_poll_instant = Instant::now();
         }
     }
@@ -148,8 +151,10 @@ impl DeadlockApp {
     pub fn reset_match(&mut self) {
         self.clock.reset();
         self.scheduler.midboss.reset();
+        self.scheduler.boxes.reset();
         self.triggered_alerts.clear();
         self.triggered_warnings.clear();
+        self.hero_tracker.reset_hero_state();
     }
 }
 
@@ -174,10 +179,10 @@ impl eframe::App for DeadlockApp {
         }
 
         let current_time = self.clock.current_seconds();
-        let immediate_events = if is_game_running {
-            self.scheduler.get_immediate_next_events(current_time)
+        let (immediate_events, next_event) = if is_game_running {
+            self.scheduler.get_immediate_and_next_events(current_time)
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
 
         let is_interactive = self.interactive_mode.load(Ordering::Relaxed);
@@ -187,11 +192,11 @@ impl eframe::App for DeadlockApp {
             self.hero_menu_open = false;
         }
 
-        // Fixed compact HUD geometry: 250 x 52 px (expands to 190 px only when hero menu is opened)
+        // Fixed compact HUD geometry: 250 x 64 px (expands to 195 px only when hero menu is opened)
         let target_size = if self.hero_menu_open && is_interactive {
-            Vec2::new(250.0, 190.0)
+            Vec2::new(250.0, 195.0)
         } else {
-            Vec2::new(250.0, 52.0)
+            Vec2::new(250.0, 64.0)
         };
 
         if self.current_window_size != Some(target_size) {
@@ -209,7 +214,7 @@ impl eframe::App for DeadlockApp {
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             let hero_info = self.hero_tracker.get_hero();
 
-            // 1. FILA SUPERIOR: Reloj | Héroe | Mute | Grip
+            // 1. FILA SUPERIOR: Reloj | Héroe | Reset [↺] | Mute [🔊] | Grip [⠿]
             ui.horizontal(|ui| {
                 // Clock display
                 let clock_text = if !is_game_running {
@@ -270,16 +275,16 @@ impl eframe::App for DeadlockApp {
                     );
                 }
 
-                // Origin tag (Auto: green dot, Manual: M tag)
+                // Origin tag (Auto: green dot)
                 if hero_info.source == HeroSelectionSource::Auto && hero_info.display_name != "None" {
                     ui.label(RichText::new("•").small().color(Color32::from_rgb(72, 239, 128)));
                 }
 
-                // Right-aligned controls: Mute button & Drag grip
+                // Right-aligned controls: Reset | Mute | Grip
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Drag handle
                     let (handle_rect, handle_response) = ui.allocate_exact_size(
-                        Vec2::new(20.0, 16.0),
+                        Vec2::new(18.0, 16.0),
                         egui::Sense::click_and_drag(),
                     );
 
@@ -329,10 +334,28 @@ impl eframe::App for DeadlockApp {
                     } else if is_muted {
                         ui.label(RichText::new("🔇").size(10.0).color(Color32::from_rgb(239, 68, 68)));
                     }
+
+                    // Reset Match Button [↺]
+                    if is_interactive {
+                        let reset_btn = ui.add(
+                            egui::Button::new(
+                                RichText::new("↺")
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(148, 163, 184)),
+                            )
+                            .frame(false),
+                        );
+                        if reset_btn.clicked() {
+                            self.reset_match();
+                        }
+                        if reset_btn.hovered() {
+                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        }
+                    }
                 });
             });
 
-            // 2. FILA MEDIA: Hito Macro Inmediato o Estado de Espera
+            // 2. FILA MEDIA 1: Hito Inmediato / Activo + Contadores Dinámicos (Cajas / Boss)
             ui.add_space(1.0);
             if !is_game_running {
                 ui.label(
@@ -341,6 +364,30 @@ impl eframe::App for DeadlockApp {
                         .size(11.0),
                 );
             } else {
+                // Dynamic active trackers: Box Route (F8) and Mid Boss (F9)
+                let mut status_tokens = Vec::new();
+
+                if let Some(box_rem) = self.scheduler.boxes.get_remaining(current_time) {
+                    if box_rem == 0 {
+                        status_tokens.push("📦 ¡Cajas Listas!".to_string());
+                    } else {
+                        status_tokens.push(format!("📦 {:02}:{:02}", box_rem / 60, box_rem % 60));
+                    }
+                }
+
+                if let Some(respawn_time) = self.scheduler.midboss.get_active_respawn(current_time) {
+                    let rem = respawn_time as i32 - current_time as i32;
+                    if rem > 0 {
+                        status_tokens.push(format!("👑 Boss {:02}:{:02}", rem / 60, rem % 60));
+                    }
+                }
+
+                let extra_tokens_str = if !status_tokens.is_empty() {
+                    format!(" │ {}", status_tokens.join(" "))
+                } else {
+                    String::new()
+                };
+
                 let active_events: Vec<&MacroEvent> = immediate_events
                     .iter()
                     .filter(|e| e.status(current_time) == EventStatus::Active)
@@ -349,10 +396,10 @@ impl eframe::App for DeadlockApp {
                 if !active_events.is_empty() {
                     let names: Vec<&str> = active_events.iter().map(|e| e.kind.display_name()).collect();
                     ui.label(
-                        RichText::new(format!("✦ ¡ACTIVO! {}", names.join(" + ")))
+                        RichText::new(format!("✦ ¡ACTIVO! {}{}", names.join(" + "), extra_tokens_str))
                             .color(Color32::from_rgb(72, 239, 128))
                             .strong()
-                            .size(11.5),
+                            .size(11.0),
                     );
                 } else if let Some(first_event) = immediate_events.first() {
                     let remaining = first_event.remaining_seconds(current_time);
@@ -362,43 +409,48 @@ impl eframe::App for DeadlockApp {
 
                     if status == EventStatus::Warning {
                         ui.label(
-                            RichText::new(format!("✦ ¡ROTACIÓN! {} en {}s", label_names, remaining))
+                            RichText::new(format!("✦ ¡ROTACIÓN! {} en {}s{}", label_names, remaining, extra_tokens_str))
                                 .color(Color32::from_rgb(251, 146, 60))
                                 .strong()
-                                .size(11.5),
+                                .size(11.0),
                         );
                     } else {
                         let rem_min = remaining / 60;
                         let rem_sec = remaining % 60;
                         let target_str = format_time_mmss(first_event.target_time);
 
-                        let boss_extra = if let Some(respawn_time) = self.scheduler.midboss.get_active_respawn(current_time) {
-                            let rem = respawn_time as i32 - current_time as i32;
-                            if rem > 0 {
-                                format!(" │ Boss {:02}:{:02}", rem / 60, rem % 60)
-                            } else {
-                                String::new()
-                            }
-                        } else {
-                            String::new()
-                        };
-
                         ui.label(
-                            RichText::new(format!("✦ {} {} ({:02}:{:02}){}", target_str, label_names, rem_min, rem_sec, boss_extra))
+                            RichText::new(format!("✦ {} {} ({:02}:{:02}){}", target_str, label_names, rem_min, rem_sec, extra_tokens_str))
                                 .color(Color32::from_rgb(226, 232, 240))
-                                .size(11.5),
+                                .size(11.0),
                         );
                     }
                 } else {
                     ui.label(
-                        RichText::new("✦ Sin eventos pendientes")
+                        RichText::new(format!("✦ Sin eventos pendientes{}", extra_tokens_str))
                             .color(Color32::from_rgb(148, 163, 184))
-                            .size(11.5),
+                            .size(11.0),
                     );
                 }
             }
 
-            // 3. FILA INFERIOR: Micro Barra de Progreso (2px)
+            // 3. FILA MEDIA 2: Vista Previa del Siguiente Hito (Transición Suave)
+            if is_game_running {
+                if let Some(next) = next_event {
+                    let rem = next.remaining_seconds(current_time);
+                    let rem_min = rem / 60;
+                    let rem_sec = rem % 60;
+                    let target_str = format_time_mmss(next.target_time);
+
+                    ui.label(
+                        RichText::new(format!("▸ Sig: {} {} (en {:02}:{:02})", target_str, next.kind.display_name(), rem_min, rem_sec))
+                            .color(Color32::from_rgb(148, 163, 184))
+                            .size(10.0),
+                    );
+                }
+            }
+
+            // 4. FILA INFERIOR: Micro Barra de Progreso (2px)
             if is_game_running {
                 if let Some(first_event) = immediate_events.first() {
                     let progress = first_event.progress(current_time);
@@ -424,7 +476,7 @@ impl eframe::App for DeadlockApp {
                 ui.painter().rect_filled(rect, Rounding::same(1.0), Color32::from_rgb(22, 27, 34));
             }
 
-            // 4. MENÚ DESPLEGABLE DE SELECCIÓN MANUAL DE HÉROE (Solo en modo interactivo)
+            // 5. MENÚ DESPLEGABLE DE SELECCIÓN MANUAL DE HÉROE (Solo en modo interactivo)
             if self.hero_menu_open && is_interactive {
                 ui.add_space(4.0);
                 ui.separator();
