@@ -190,7 +190,7 @@ fn main() -> eframe::Result<()> {
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
-            .with_inner_size([250.0, 68.0])
+            .with_inner_size([250.0, 52.0])
             .with_position([config.win_x as f32, config.win_y as f32]),
         ..Default::default()
     };

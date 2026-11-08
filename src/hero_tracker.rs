@@ -49,8 +49,8 @@ pub static HERO_ROSTER: &[(&str, &str)] = &[
     ("hero_lash", "Lash"),
 ];
 
-pub fn get_all_heroes() -> Vec<(&'static str, &'static str)> {
-    HERO_ROSTER.to_vec()
+pub fn get_all_heroes() -> &'static [(&'static str, &'static str)] {
+    HERO_ROSTER
 }
 
 pub fn map_internal_hero_id(internal_id: &str) -> String {
@@ -112,7 +112,8 @@ impl HeroTracker {
         let path = custom_log_path.or_else(Self::find_default_deadlock_log_path);
         let (initial_offset, initial_created) = if let Some(ref p) = path {
             if let Ok(m) = std::fs::metadata(p) {
-                (m.len(), m.created().ok())
+                // Read last 64 KB so games already in progress are detected immediately on startup
+                (m.len().saturating_sub(64 * 1024), m.created().ok())
             } else {
                 (0, None)
             }
@@ -140,6 +141,10 @@ impl HeroTracker {
         };
     }
 
+    pub fn reset_to_auto(&mut self) {
+        self.current_hero.source = HeroSelectionSource::Auto;
+    }
+
     pub fn poll_log(&mut self) -> Option<String> {
         let path = self.log_path.as_ref()?;
         let file = File::open(path).ok()?;
@@ -160,11 +165,19 @@ impl HeroTracker {
 
         let mut latest_detected = None;
         let mut line = String::new();
+        let mut current_pos = self.last_offset;
 
         while let Ok(bytes_read) = reader.read_line(&mut line) {
             if bytes_read == 0 {
                 break;
             }
+
+            // Do not consume incomplete lines written mid-flight
+            if !line.ends_with('\n') && !line.ends_with('\r') {
+                break;
+            }
+
+            current_pos += bytes_read as u64;
 
             if let Some(hero_id) = parse_hero_from_log_line(&line) {
                 let display = map_internal_hero_id(&hero_id);
@@ -180,10 +193,7 @@ impl HeroTracker {
             line.clear();
         }
 
-        if let Ok(new_pos) = reader.stream_position() {
-            self.last_offset = new_pos;
-        }
-
+        self.last_offset = current_pos;
         latest_detected
     }
 

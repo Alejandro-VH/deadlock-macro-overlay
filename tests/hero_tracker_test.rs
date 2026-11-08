@@ -116,9 +116,102 @@ fn test_tracker_manual_override_persists() {
     let detected = tracker.poll_log();
     assert_eq!(detected, Some("Vindicta".to_string())); // detected parsed name
     let hero_after = tracker.get_hero();
-    // But current hero remains Seven because it was manually set
     assert_eq!(hero_after.display_name, "Seven");
     assert_eq!(hero_after.source, HeroSelectionSource::Manual);
+
+    let _ = std::fs::remove_file(log_file);
+}
+
+#[test]
+fn test_tracker_reset_to_auto() {
+    let dir = std::env::temp_dir().join("deadlock_test_log_reset_auto");
+    let _ = std::fs::create_dir_all(&dir);
+    let log_file = dir.join("console.log");
+
+    {
+        let mut f = File::create(&log_file).unwrap();
+        writeln!(f, "Start").unwrap();
+    }
+
+    let mut tracker = HeroTracker::new(Some(log_file.clone()));
+    tracker.set_manual_hero("Abrams");
+    assert_eq!(tracker.get_hero().source, HeroSelectionSource::Manual);
+
+    // Reset back to auto
+    tracker.reset_to_auto();
+    assert_eq!(tracker.get_hero().source, HeroSelectionSource::Auto);
+
+    // Now write a new hero line
+    {
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log_file).unwrap();
+        writeln!(f, "Attempting to spawn hero hero_hornet (3).").unwrap();
+    }
+
+    let detected = tracker.poll_log();
+    assert_eq!(detected, Some("Vindicta".to_string()));
+    assert_eq!(tracker.get_hero().display_name, "Vindicta");
+    assert_eq!(tracker.get_hero().source, HeroSelectionSource::Auto);
+
+    let _ = std::fs::remove_file(log_file);
+}
+
+#[test]
+fn test_tracker_reads_tail_on_startup_for_existing_log() {
+    let dir = std::env::temp_dir().join("deadlock_test_log_startup_tail");
+    let _ = std::fs::create_dir_all(&dir);
+    let log_file = dir.join("console.log");
+
+    // Game already running and wrote spawn event before overlay was opened
+    {
+        let mut f = File::create(&log_file).unwrap();
+        writeln!(f, "Game started earlier").unwrap();
+        writeln!(f, "Attempting to spawn hero hero_gigawatt (3).").unwrap();
+    }
+
+    // Overlay starts now
+    let mut tracker = HeroTracker::new(Some(log_file.clone()));
+    let detected = tracker.poll_log();
+    assert_eq!(detected, Some("Seven".to_string()));
+    assert_eq!(tracker.get_hero().display_name, "Seven");
+
+    let _ = std::fs::remove_file(log_file);
+}
+
+#[test]
+fn test_tracker_handles_partial_line_without_advancing_offset() {
+    let dir = std::env::temp_dir().join("deadlock_test_log_partial");
+    let _ = std::fs::create_dir_all(&dir);
+    let log_file = dir.join("console.log");
+
+    {
+        let mut f = File::create(&log_file).unwrap();
+        writeln!(f, "Line 1").unwrap();
+    }
+
+    let mut tracker = HeroTracker::new(Some(log_file.clone()));
+    tracker.poll_log();
+
+    // Incomplete write: no newline at end
+    {
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log_file).unwrap();
+        write!(f, "Attempting to spawn hero hero_").unwrap();
+        f.flush().unwrap();
+    }
+
+    // Should not consume incomplete line
+    let detected = tracker.poll_log();
+    assert_eq!(detected, None);
+
+    // Finish writing the line
+    {
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log_file).unwrap();
+        writeln!(f, "hornet (3).").unwrap();
+    }
+
+    // Next poll should cleanly read full line
+    let detected = tracker.poll_log();
+    assert_eq!(detected, Some("Vindicta".to_string()));
+    assert_eq!(tracker.get_hero().display_name, "Vindicta");
 
     let _ = std::fs::remove_file(log_file);
 }
@@ -150,4 +243,3 @@ fn test_tracker_handles_file_truncation() {
 
     let _ = std::fs::remove_file(log_file);
 }
-
