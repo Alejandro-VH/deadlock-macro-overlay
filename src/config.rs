@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
-/// Coordinates and dimensions for overlay positioning and OCR sampling.
+/// Coordinates and dimensions for overlay positioning, OCR sampling, and preferences.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayConfig {
     pub win_x: i32,
@@ -12,6 +12,7 @@ pub struct OverlayConfig {
     pub roi_w: i32,
     pub roi_h: i32,
     pub last_hero: String,
+    pub is_muted: bool,
 }
 
 impl OverlayConfig {
@@ -26,6 +27,7 @@ impl OverlayConfig {
             roi_w: 120,
             roi_h: 42,
             last_hero: String::new(),
+            is_muted: false,
         }
     }
 
@@ -41,6 +43,7 @@ impl OverlayConfig {
         if !self.last_hero.is_empty() {
             writeln!(file, "last_hero={}", self.last_hero)?;
         }
+        writeln!(file, "is_muted={}", self.is_muted)?;
         file.flush()
     }
 
@@ -96,6 +99,11 @@ impl OverlayConfig {
                     "last_hero" => {
                         if !val.is_empty() {
                             config.last_hero = val.to_string();
+                        }
+                    }
+                    "is_muted" => {
+                        if let Ok(v) = val.parse::<bool>() {
+                            config.is_muted = v;
                         }
                     }
                     _ => {}

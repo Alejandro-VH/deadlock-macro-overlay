@@ -51,6 +51,7 @@ pub struct DeadlockApp {
     pub scheduler: MacroScheduler,
     pub audio: AudioNotifier,
     pub interactive_mode: Arc<AtomicBool>,
+    pub game_running: Arc<AtomicBool>,
     pub ocr_rx: Receiver<Option<u32>>,
     pub triggered_alerts: HashSet<(EventKind, u32)>, // (kind, target_time)
     pub triggered_warnings: HashSet<(EventKind, u32)>,
@@ -66,20 +67,23 @@ impl DeadlockApp {
         config: OverlayConfig,
         config_path: String,
         interactive_mode: Arc<AtomicBool>,
+        game_running: Arc<AtomicBool>,
         ocr_rx: Receiver<Option<u32>>,
     ) -> Self {
         let mut hero_tracker = HeroTracker::new(None);
         if !config.last_hero.is_empty() && config.last_hero != "Auto" {
             hero_tracker.set_manual_hero(&config.last_hero);
         }
+        let audio = AudioNotifier::with_muted(config.is_muted);
 
         Self {
             config,
             config_path,
             clock: ClockFilter::new(),
             scheduler: MacroScheduler::default(),
-            audio: AudioNotifier::new(),
+            audio,
             interactive_mode,
+            game_running,
             ocr_rx,
             triggered_alerts: HashSet::new(),
             triggered_warnings: HashSet::new(),
@@ -115,7 +119,7 @@ impl DeadlockApp {
         }
     }
 
-    /// Evaluates scheduled events and fires synthetic audio alerts when crossing thresholds.
+    /// Evaluates scheduled events and fires synthetic harmonic audio alerts when crossing thresholds.
     pub fn process_alerts(&mut self, events: &[MacroEvent]) {
         let now = self.clock.current_seconds();
         let mut trigger_warn = false;
@@ -154,11 +158,27 @@ impl eframe::App for DeadlockApp {
         // Disable text selection globally so mouse interaction is pure controls/dragging
         ctx.style_mut(|s| s.interaction.selectable_labels = false);
 
-        self.update_timing();
+        let is_game_running = self.game_running.load(Ordering::Relaxed);
+
+        if is_game_running {
+            self.update_timing();
+            let current_time = self.clock.current_seconds();
+            let immediate_events = self.scheduler.get_immediate_next_events(current_time);
+            self.process_alerts(&immediate_events);
+        } else {
+            // Game not running: drain OCR messages and keep clock reset
+            while let Ok(_) = self.ocr_rx.try_recv() {}
+            self.clock.reset();
+            self.triggered_alerts.clear();
+            self.triggered_warnings.clear();
+        }
 
         let current_time = self.clock.current_seconds();
-        let immediate_events = self.scheduler.get_immediate_next_events(current_time);
-        self.process_alerts(&immediate_events);
+        let immediate_events = if is_game_running {
+            self.scheduler.get_immediate_next_events(current_time)
+        } else {
+            Vec::new()
+        };
 
         let is_interactive = self.interactive_mode.load(Ordering::Relaxed);
 
@@ -189,18 +209,27 @@ impl eframe::App for DeadlockApp {
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             let hero_info = self.hero_tracker.get_hero();
 
-            // 1. FILA SUPERIOR: Reloj | Héroe | Grip
+            // 1. FILA SUPERIOR: Reloj | Héroe | Mute | Grip
             ui.horizontal(|ui| {
-                // Clock display in amber soul gold
-                let clock_text = if self.clock.is_active() {
+                // Clock display
+                let clock_text = if !is_game_running {
+                    "--:--".to_string()
+                } else if self.clock.is_active() {
                     format_time_mmss(current_time)
                 } else {
                     "--:--".to_string()
                 };
+
+                let clock_color = if !is_game_running {
+                    Color32::from_rgb(100, 116, 139)
+                } else {
+                    Color32::from_rgb(245, 158, 11)
+                };
+
                 ui.label(
                     RichText::new(clock_text)
                         .strong()
-                        .color(Color32::from_rgb(245, 158, 11))
+                        .color(clock_color)
                         .size(12.5),
                 );
 
@@ -246,10 +275,11 @@ impl eframe::App for DeadlockApp {
                     ui.label(RichText::new("•").small().color(Color32::from_rgb(72, 239, 128)));
                 }
 
-                // Drag handle at top right
+                // Right-aligned controls: Mute button & Drag grip
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Drag handle
                     let (handle_rect, handle_response) = ui.allocate_exact_size(
-                        Vec2::new(26.0, 16.0),
+                        Vec2::new(20.0, 16.0),
                         egui::Sense::click_and_drag(),
                     );
 
@@ -275,85 +305,123 @@ impl eframe::App for DeadlockApp {
                             let _ = self.config.save_to_file(&self.config_path);
                         }
                     }
+
+                    // Mute toggle button
+                    let is_muted = self.audio.is_muted();
+                    let mute_symbol = if is_muted { "🔇" } else { "🔊" };
+                    if is_interactive {
+                        let mute_btn = ui.add(
+                            egui::Button::new(
+                                RichText::new(mute_symbol)
+                                    .size(11.0)
+                                    .color(if is_muted { Color32::from_rgb(239, 68, 68) } else { Color32::from_rgb(148, 163, 184) }),
+                            )
+                            .frame(false),
+                        );
+                        if mute_btn.clicked() {
+                            let new_muted = self.audio.toggle_mute();
+                            self.config.is_muted = new_muted;
+                            let _ = self.config.save_to_file(&self.config_path);
+                        }
+                        if mute_btn.hovered() {
+                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        }
+                    } else if is_muted {
+                        ui.label(RichText::new("🔇").size(10.0).color(Color32::from_rgb(239, 68, 68)));
+                    }
                 });
             });
 
-            // 2. FILA MEDIA: Hito Macro Inmediato
+            // 2. FILA MEDIA: Hito Macro Inmediato o Estado de Espera
             ui.add_space(1.0);
-            let active_events: Vec<&MacroEvent> = immediate_events
-                .iter()
-                .filter(|e| e.status(current_time) == EventStatus::Active)
-                .collect();
-
-            if !active_events.is_empty() {
-                let names: Vec<&str> = active_events.iter().map(|e| e.kind.display_name()).collect();
+            if !is_game_running {
                 ui.label(
-                    RichText::new(format!("✦ ¡ACTIVO! {}", names.join(" + ")))
-                        .color(Color32::from_rgb(72, 239, 128))
-                        .strong()
-                        .size(11.5),
+                    RichText::new("✦ Esperando a Deadlock...")
+                        .color(Color32::from_rgb(148, 163, 184))
+                        .size(11.0),
                 );
-            } else if let Some(first_event) = immediate_events.first() {
-                let remaining = first_event.remaining_seconds(current_time);
-                let status = first_event.status(current_time);
-                let names: Vec<&str> = immediate_events.iter().map(|e| e.kind.display_name()).collect();
-                let label_names = names.join(" + ");
+            } else {
+                let active_events: Vec<&MacroEvent> = immediate_events
+                    .iter()
+                    .filter(|e| e.status(current_time) == EventStatus::Active)
+                    .collect();
 
-                if status == EventStatus::Warning {
+                if !active_events.is_empty() {
+                    let names: Vec<&str> = active_events.iter().map(|e| e.kind.display_name()).collect();
                     ui.label(
-                        RichText::new(format!("✦ ¡ROTACIÓN! {} en {}s", label_names, remaining))
-                            .color(Color32::from_rgb(251, 146, 60))
+                        RichText::new(format!("✦ ¡ACTIVO! {}", names.join(" + ")))
+                            .color(Color32::from_rgb(72, 239, 128))
                             .strong()
                             .size(11.5),
                     );
-                } else {
-                    let rem_min = remaining / 60;
-                    let rem_sec = remaining % 60;
-                    let target_str = format_time_mmss(first_event.target_time);
+                } else if let Some(first_event) = immediate_events.first() {
+                    let remaining = first_event.remaining_seconds(current_time);
+                    let status = first_event.status(current_time);
+                    let names: Vec<&str> = immediate_events.iter().map(|e| e.kind.display_name()).collect();
+                    let label_names = names.join(" + ");
 
-                    let boss_extra = if let Some(respawn_time) = self.scheduler.midboss.get_active_respawn(current_time) {
-                        let rem = respawn_time as i32 - current_time as i32;
-                        if rem > 0 {
-                            format!(" │ Boss {:02}:{:02}", rem / 60, rem % 60)
+                    if status == EventStatus::Warning {
+                        ui.label(
+                            RichText::new(format!("✦ ¡ROTACIÓN! {} en {}s", label_names, remaining))
+                                .color(Color32::from_rgb(251, 146, 60))
+                                .strong()
+                                .size(11.5),
+                        );
+                    } else {
+                        let rem_min = remaining / 60;
+                        let rem_sec = remaining % 60;
+                        let target_str = format_time_mmss(first_event.target_time);
+
+                        let boss_extra = if let Some(respawn_time) = self.scheduler.midboss.get_active_respawn(current_time) {
+                            let rem = respawn_time as i32 - current_time as i32;
+                            if rem > 0 {
+                                format!(" │ Boss {:02}:{:02}", rem / 60, rem % 60)
+                            } else {
+                                String::new()
+                            }
                         } else {
                             String::new()
-                        }
-                    } else {
-                        String::new()
-                    };
+                        };
 
+                        ui.label(
+                            RichText::new(format!("✦ {} {} ({:02}:{:02}){}", target_str, label_names, rem_min, rem_sec, boss_extra))
+                                .color(Color32::from_rgb(226, 232, 240))
+                                .size(11.5),
+                        );
+                    }
+                } else {
                     ui.label(
-                        RichText::new(format!("✦ {} {} ({:02}:{:02}){}", target_str, label_names, rem_min, rem_sec, boss_extra))
-                            .color(Color32::from_rgb(226, 232, 240))
+                        RichText::new("✦ Sin eventos pendientes")
+                            .color(Color32::from_rgb(148, 163, 184))
                             .size(11.5),
                     );
                 }
-            } else {
-                ui.label(
-                    RichText::new("✦ Sin eventos pendientes")
-                        .color(Color32::from_rgb(148, 163, 184))
-                        .size(11.5),
-                );
             }
 
             // 3. FILA INFERIOR: Micro Barra de Progreso (2px)
-            if let Some(first_event) = immediate_events.first() {
-                let progress = first_event.progress(current_time);
-                let status = first_event.status(current_time);
-                let bar_color = if status == EventStatus::Active {
-                    Color32::from_rgb(72, 239, 128)
-                } else if status == EventStatus::Warning {
-                    Color32::from_rgb(251, 146, 60)
-                } else {
-                    Color32::from_rgb(245, 158, 11) // Soul gold
-                };
+            if is_game_running {
+                if let Some(first_event) = immediate_events.first() {
+                    let progress = first_event.progress(current_time);
+                    let status = first_event.status(current_time);
+                    let bar_color = if status == EventStatus::Active {
+                        Color32::from_rgb(72, 239, 128)
+                    } else if status == EventStatus::Warning {
+                        Color32::from_rgb(251, 146, 60)
+                    } else {
+                        Color32::from_rgb(245, 158, 11) // Soul gold
+                    };
 
+                    ui.add_space(2.0);
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, Rounding::same(1.0), Color32::from_rgb(22, 27, 34));
+                    let filled_width = (rect.width() * progress).clamp(0.0, rect.width());
+                    let filled_rect = egui::Rect::from_min_size(rect.min, Vec2::new(filled_width, rect.height()));
+                    ui.painter().rect_filled(filled_rect, Rounding::same(1.0), bar_color);
+                }
+            } else {
                 ui.add_space(2.0);
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.0), egui::Sense::hover());
                 ui.painter().rect_filled(rect, Rounding::same(1.0), Color32::from_rgb(22, 27, 34));
-                let filled_width = (rect.width() * progress).clamp(0.0, rect.width());
-                let filled_rect = egui::Rect::from_min_size(rect.min, Vec2::new(filled_width, rect.height()));
-                ui.painter().rect_filled(filled_rect, Rounding::same(1.0), bar_color);
             }
 
             // 4. MENÚ DESPLEGABLE DE SELECCIÓN MANUAL DE HÉROE (Solo en modo interactivo)

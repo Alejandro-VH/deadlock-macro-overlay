@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use windows::core::w;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
-    SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    EnumWindows, FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
+    GetWindowTextW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN,
+    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
 const WINDOW_TITLE: &str = "DeadlockMacroOverlay";
@@ -75,6 +75,36 @@ fn is_deadlock_game_foreground(overlay_hwnd: HWND) -> bool {
     }
 }
 
+unsafe extern "system" fn enum_check_deadlock(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let mut title = [0u16; 128];
+    let len = GetWindowTextW(hwnd, &mut title);
+    if len > 0 {
+        let title_str = String::from_utf16_lossy(&title[..len as usize]);
+        if title_str != WINDOW_TITLE
+            && (title_str == "Deadlock"
+                || title_str.starts_with("Deadlock ")
+                || title_str.contains("project8"))
+        {
+            let found = lparam.0 as *mut bool;
+            *found = true;
+            return BOOL(0); // Stop enumerating
+        }
+    }
+    BOOL(1) // Continue
+}
+
+/// 100% passive Win32 query checking if the Deadlock game window currently exists.
+fn is_deadlock_game_running() -> bool {
+    unsafe {
+        let mut found = false;
+        let _ = EnumWindows(
+            Some(enum_check_deadlock),
+            LPARAM(&mut found as *mut bool as isize),
+        );
+        found
+    }
+}
+
 fn main() -> eframe::Result<()> {
     // 1. Detect screen resolution for default layout
     let (screen_w, screen_h) = unsafe {
@@ -86,6 +116,7 @@ fn main() -> eframe::Result<()> {
     let config = OverlayConfig::load_from_file(CONFIG_FILE, screen_w, screen_h);
     let interactive_flag = Arc::new(AtomicBool::new(false)); // Start in ghost (click-through) mode
     let manual_override_flag = Arc::new(AtomicBool::new(false));
+    let game_running_flag = Arc::new(AtomicBool::new(false));
     let roi_config = Arc::new(std::sync::RwLock::new(config.clone()));
 
     // 2. Setup channels
@@ -158,14 +189,24 @@ fn main() -> eframe::Result<()> {
         })
         .expect("Failed to spawn focus manager thread");
 
-    // 5. Background Screen Reader OCR thread (1 Hz)
+    // 5. Background Screen Reader OCR thread (1 Hz) - Only active when Deadlock is running
     let roi_clone = Arc::clone(&roi_config);
+    let game_running_ocr_clone = Arc::clone(&game_running_flag);
     thread::Builder::new()
         .name("ocr_reader".into())
         .spawn(move || {
             let ocr = ScreenOcr::new();
 
             loop {
+                let is_running = is_deadlock_game_running();
+                game_running_ocr_clone.store(is_running, Ordering::Relaxed);
+
+                if !is_running {
+                    let _ = ocr_tx.send(None);
+                    thread::sleep(Duration::from_millis(1000));
+                    continue;
+                }
+
                 let (rx, ry, rw, rh) = {
                     let cfg = roi_clone.read().unwrap();
                     (cfg.roi_x, cfg.roi_y, cfg.roi_w, cfg.roi_h)
@@ -203,6 +244,7 @@ fn main() -> eframe::Result<()> {
                 config,
                 CONFIG_FILE.to_string(),
                 interactive_flag,
+                game_running_flag,
                 ocr_rx,
             );
 
