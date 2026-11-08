@@ -15,8 +15,9 @@ use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_TAB};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
-    GetWindowTextW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN,
+    GetWindowTextW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, SM_CXSCREEN, SM_CYSCREEN,
     SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
 
 const WINDOW_TITLE: &str = "DeadlockMacroOverlay";
@@ -36,6 +37,29 @@ fn apply_click_through(hwnd: HWND, click_through: bool) {
         };
         if current_style != new_style {
             let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND(std::ptr::null_mut()),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            );
+        }
+    }
+}
+
+/// Strips WS_MAXIMIZEBOX and WS_THICKFRAME to completely disable Windows Aero Snap / auto-scaling.
+fn strip_snap_styles(hwnd: HWND) {
+    if hwnd.0.is_null() {
+        return;
+    }
+    unsafe {
+        let current_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let stripped_style = current_style & !(WS_MAXIMIZEBOX.0 as isize) & !(WS_THICKFRAME.0 as isize);
+        if stripped_style != current_style {
+            let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, stripped_style);
             let _ = SetWindowPos(
                 hwnd,
                 HWND(std::ptr::null_mut()),
@@ -151,6 +175,7 @@ fn main() -> eframe::Result<()> {
                         cached_hwnd = FindWindowW(None, w!("DeadlockMacroOverlay"))
                             .unwrap_or(HWND(std::ptr::null_mut()));
                         if !cached_hwnd.0.is_null() {
+                            strip_snap_styles(cached_hwnd);
                             apply_click_through(cached_hwnd, true);
                         }
                     }
@@ -232,6 +257,9 @@ fn main() -> eframe::Result<()> {
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
+            .with_resizable(false)
+            .with_maximize_button(false)
+            .with_minimize_button(false)
             .with_inner_size([250.0, 64.0])
             .with_position([config.win_x as f32, config.win_y as f32]),
         ..Default::default()
