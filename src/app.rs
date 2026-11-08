@@ -8,12 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use windows::core::w;
-use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, ReleaseCapture};
-use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetCursorPos, GetWindowRect, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebindTarget {
@@ -65,35 +60,6 @@ pub fn poll_key_for_rebinding() -> Option<u16> {
         }
     }
     None
-}
-
-/// Triggers smooth, zero-latency native Windows window dragging via DWM using actual cursor coordinates.
-pub fn start_native_window_drag() -> Option<(i32, i32)> {
-    unsafe {
-        let hwnd = FindWindowW(None, w!("DeadlockMacroOverlay")).ok()?;
-        if hwnd.0.is_null() {
-            return None;
-        }
-
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        let lparam = (((pt.y as u16 as usize) << 16) | (pt.x as u16 as usize)) as isize;
-
-        let _ = ReleaseCapture();
-        SendMessageW(
-            hwnd,
-            WM_NCLBUTTONDOWN,
-            WPARAM(HTCAPTION as usize),
-            LPARAM(lparam),
-        );
-
-        let mut rect = RECT::default();
-        if GetWindowRect(hwnd, &mut rect).is_ok() {
-            Some((rect.left, rect.top))
-        } else {
-            None
-        }
-    }
 }
 
 pub struct DeadlockApp {
@@ -386,20 +352,30 @@ impl eframe::App for DeadlockApp {
                     Color32::from_rgb(245, 158, 11)
                 };
 
-                ui.label(
-                    RichText::new(clock_text)
-                        .strong()
-                        .color(clock_color)
-                        .size(13.0),
+                let clock_resp = ui.add(
+                    egui::Label::new(
+                        RichText::new(clock_text)
+                            .strong()
+                            .color(clock_color)
+                            .size(13.0),
+                    )
+                    .sense(egui::Sense::drag()),
                 );
+                if clock_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grab);
+                }
+                if clock_resp.drag_started_by(egui::PointerButton::Primary) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Close button [✕] - Only visible when Deadlock is NOT running
+                    // Close button [X] - Only visible when Deadlock is NOT running
                     if !is_game_running {
                         let close_btn = ui.add(
                             egui::Button::new(
-                                RichText::new("✕")
-                                    .size(11.0)
+                                RichText::new("X")
+                                    .strong()
+                                    .size(10.5)
                                     .color(Color32::from_rgb(239, 68, 68)),
                             )
                             .frame(false),
@@ -409,39 +385,6 @@ impl eframe::App for DeadlockApp {
                         }
                         if close_btn.hovered() {
                             ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                        }
-                    }
-
-                    // Native painter-drawn grip dots (6-dot matrix: 2 columns of 3 dots, 1.2px radius)
-                    let (handle_rect, handle_response) = ui.allocate_exact_size(
-                        Vec2::new(14.0, 14.0),
-                        egui::Sense::click_and_drag(),
-                    );
-                    let is_hovered = handle_response.hovered();
-                    let dot_color = if is_hovered {
-                        Color32::from_rgb(226, 232, 240)
-                    } else {
-                        Color32::from_rgb(100, 116, 139)
-                    };
-                    let cx = handle_rect.center().x;
-                    let cy = handle_rect.center().y;
-                    for dx in &[-2.5_f32, 2.5_f32] {
-                        for dy in &[-4.0_f32, 0.0_f32, 4.0_f32] {
-                            ui.painter().circle_filled(
-                                egui::pos2(cx + dx, cy + dy),
-                                1.2,
-                                dot_color,
-                            );
-                        }
-                    }
-
-                    if handle_response.is_pointer_button_down_on()
-                        || handle_response.drag_started()
-                    {
-                        if let Some((new_x, new_y)) = start_native_window_drag() {
-                            self.config.win_x = new_x;
-                            self.config.win_y = new_y;
-                            let _ = self.config.save_to_file(&self.config_path);
                         }
                     }
 
@@ -517,6 +460,18 @@ impl eframe::App for DeadlockApp {
                             if reset_btn.hovered() {
                                 ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
                             }
+                        }
+                    }
+
+                    // Natural Header Drag Zone (Remaining empty space in the header bar)
+                    let avail = ui.available_size_before_wrap();
+                    if avail.x > 0.0 && avail.y > 0.0 {
+                        let drag_area = ui.allocate_response(avail, egui::Sense::drag());
+                        if drag_area.hovered() {
+                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grab);
+                        }
+                        if drag_area.drag_started_by(egui::PointerButton::Primary) {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
                     }
                 });
@@ -904,6 +859,19 @@ impl eframe::App for DeadlockApp {
                 }
             }
         });
+
+        // Persist window position after native dragging
+        if let Some(outer) = ctx.input(|i| i.viewport().outer_rect) {
+            let ppp = ctx.pixels_per_point();
+            let cur_x = (outer.min.x * ppp).round() as i32;
+            let cur_y = (outer.min.y * ppp).round() as i32;
+            let pointer_down = ctx.input(|i| i.pointer.primary_down());
+            if !pointer_down && (cur_x != self.config.win_x || cur_y != self.config.win_y) {
+                self.config.win_x = cur_x;
+                self.config.win_y = cur_y;
+                let _ = self.config.save_to_file(&self.config_path);
+            }
+        }
 
         // Fast repaint in calibration/config mode; low CPU (200ms) in ghost mode
         if is_interactive || self.config_menu_open {
