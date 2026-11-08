@@ -274,7 +274,7 @@ fn main() -> eframe::Result<()> {
             .with_resizable(false)
             .with_maximize_button(false)
             .with_minimize_button(false)
-            .with_inner_size([240.0, 140.0])
+            .with_inner_size([240.0, 175.0])
             .with_position([config.win_x as f32, config.win_y as f32]),
         ..Default::default()
     };

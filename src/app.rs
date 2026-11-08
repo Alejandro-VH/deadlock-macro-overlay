@@ -295,16 +295,16 @@ impl eframe::App for DeadlockApp {
             self.process_alerts(&grp.events);
         }
 
-        // Dynamic geometry: Option A vertical layout sizing
+        // Dynamic geometry: Option A vertical layout sizing with comfortable breathing room
         let target_size = if self.config_menu_open && is_interactive {
-            Vec2::new(240.0, 195.0)
+            Vec2::new(240.0, 205.0)
         } else if !is_game_running {
             Vec2::new(240.0, 85.0)
         } else {
             let event_count = immediate_group.as_ref().map_or(1, |g| g.events.len().max(1));
             let has_next = next_group.is_some();
-            let h = 82.0 + 16.0 + (event_count as f32 * 16.0) + (if has_next { 30.0 } else { 0.0 });
-            Vec2::new(240.0, h.clamp(120.0, 195.0))
+            let h = 105.0 + 18.0 + (event_count as f32 * 18.0) + (if has_next { 34.0 } else { 0.0 });
+            Vec2::new(240.0, h.clamp(145.0, 225.0))
         };
 
         if self.current_window_size != Some(target_size) {
@@ -576,8 +576,7 @@ impl eframe::App for DeadlockApp {
                         let header_text = if group.status == EventStatus::Active {
                             format!("{} (Activo)", target_str)
                         } else {
-                            let rem = group.remaining_seconds.max(0);
-                            format!("{} (en {:02}:{:02})", target_str, rem / 60, rem % 60)
+                            target_str
                         };
 
                         ui.label(
@@ -611,20 +610,14 @@ impl eframe::App for DeadlockApp {
                     if let Some(ref next) = next_group {
                         ui.add_space(2.0);
                         let nxt_target_str = format_time_mmss(next.target_time);
-                        let rem = next.remaining_seconds.max(0);
                         let names: Vec<&str> =
                             next.events.iter().map(|e| e.kind.display_name()).collect();
                         let names_str = names.join(" · ");
 
                         ui.label(
-                            RichText::new(format!(
-                                "Siguiente: {} (en {:02}:{:02})",
-                                nxt_target_str,
-                                rem / 60,
-                                rem % 60
-                            ))
-                            .size(9.5)
-                            .color(Color32::from_rgb(148, 163, 184)),
+                            RichText::new(format!("Siguiente: {}", nxt_target_str))
+                                .size(9.5)
+                                .color(Color32::from_rgb(148, 163, 184)),
                         );
                         ui.horizontal(|ui| {
                             ui.add_space(4.0);
