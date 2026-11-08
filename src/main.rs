@@ -259,7 +259,7 @@ fn main() -> eframe::Result<()> {
                 };
 
                 let _ = ocr_tx.send(reading);
-                thread::sleep(Duration::from_secs(1));
+                thread::sleep(Duration::from_millis(400));
             }
         })
         .expect("Failed to spawn OCR thread");

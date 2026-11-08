@@ -203,6 +203,26 @@ fn test_clock_filter_noise_and_drift() {
 }
 
 #[test]
+fn test_clock_filter_ignores_duplicate_second_resets() {
+    let mut filter = ClockFilter::new();
+
+    // First reading initializes the clock -> returns true
+    assert!(filter.feed_ocr_reading(Some(252))); // 04:12
+    assert_eq!(filter.current_seconds(), 252);
+
+    // Duplicate reading with same second (e.g. 400ms later during same second) -> returns false
+    assert!(!filter.feed_ocr_reading(Some(252)));
+    assert_eq!(filter.current_seconds(), 252);
+
+    // Second changes to 253 -> returns true
+    assert!(filter.feed_ocr_reading(Some(253)));
+    assert_eq!(filter.current_seconds(), 253);
+
+    // Duplicate 253 -> returns false
+    assert!(!filter.feed_ocr_reading(Some(253)));
+}
+
+#[test]
 fn test_box_route_tracker_toggle() {
     let mut tracker = BoxRouteTracker::new();
     assert_eq!(tracker.get_remaining(300), None);

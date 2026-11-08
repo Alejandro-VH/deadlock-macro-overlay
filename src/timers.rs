@@ -447,12 +447,13 @@ impl ClockFilter {
                 return true;
             }
 
-            let diff = (raw as i32 - self.current_seconds as i32).abs();
+            let prev = self.current_seconds;
+            let diff = (raw as i32 - prev as i32).abs();
             if diff <= 3 {
                 self.current_seconds = raw;
                 self.pending_candidate = None;
                 self.consecutive_reads = 0;
-                return true;
+                return raw != prev;
             }
 
             if let Some(pending) = self.pending_candidate {
@@ -462,7 +463,7 @@ impl ClockFilter {
                         self.current_seconds = raw;
                         self.pending_candidate = None;
                         self.consecutive_reads = 0;
-                        return true;
+                        return raw != prev;
                     }
                 } else {
                     self.pending_candidate = Some(raw);
