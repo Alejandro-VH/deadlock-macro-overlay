@@ -58,6 +58,7 @@ pub struct DeadlockApp {
     pub last_tick_instant: Instant,
     pub hero_tracker: HeroTracker,
     pub hero_menu_open: bool,
+    pub build_drawer_open: bool,
     pub last_log_poll_instant: Instant,
     pub current_window_size: Option<Vec2>,
 }
@@ -90,6 +91,7 @@ impl DeadlockApp {
             last_tick_instant: Instant::now(),
             hero_tracker,
             hero_menu_open: false,
+            build_drawer_open: false,
             last_log_poll_instant: Instant::now(),
             current_window_size: None,
         }
@@ -187,14 +189,17 @@ impl eframe::App for DeadlockApp {
 
         let is_interactive = self.interactive_mode.load(Ordering::Relaxed);
 
-        // Close menu automatically if leaving interactive mode
-        if !is_interactive && self.hero_menu_open {
+        // Close menus automatically if leaving interactive mode
+        if !is_interactive {
             self.hero_menu_open = false;
+            self.build_drawer_open = false;
         }
 
-        // Fixed compact HUD geometry: 250 x 64 px (expands to 195 px only when hero menu is opened)
+        // Fixed compact HUD geometry: 250 x 64 px (expands to 195 px for hero menu, 235 px for build drawer)
         let target_size = if self.hero_menu_open && is_interactive {
             Vec2::new(250.0, 195.0)
+        } else if self.build_drawer_open && is_interactive {
+            Vec2::new(270.0, 235.0)
         } else {
             Vec2::new(250.0, 64.0)
         };
@@ -258,6 +263,9 @@ impl eframe::App for DeadlockApp {
                     );
                     if btn.clicked() {
                         self.hero_menu_open = !self.hero_menu_open;
+                        if self.hero_menu_open {
+                            self.build_drawer_open = false;
+                        }
                     }
                     if btn.hovered() {
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
@@ -278,6 +286,32 @@ impl eframe::App for DeadlockApp {
                 // Origin tag (Auto: green dot)
                 if hero_info.source == HeroSelectionSource::Auto && hero_info.display_name != "None" {
                     ui.label(RichText::new("•").small().color(Color32::from_rgb(72, 239, 128)));
+                }
+
+                // Build & Counters Drawer Toggle [⚔] (interactive only)
+                if is_interactive {
+                    let build_color = if self.build_drawer_open {
+                        Color32::from_rgb(245, 158, 11)
+                    } else {
+                        Color32::from_rgb(148, 163, 184)
+                    };
+                    let build_btn = ui.add(
+                        egui::Button::new(
+                            RichText::new("⚔")
+                                .size(11.0)
+                                .color(build_color),
+                        )
+                        .frame(false),
+                    );
+                    if build_btn.clicked() {
+                        self.build_drawer_open = !self.build_drawer_open;
+                        if self.build_drawer_open {
+                            self.hero_menu_open = false;
+                        }
+                    }
+                    if build_btn.hovered() {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    }
                 }
 
                 // Right-aligned controls: Reset | Mute | Grip
@@ -509,6 +543,76 @@ impl eframe::App for DeadlockApp {
                                 let _ = self.config.save_to_file(&self.config_path);
                                 self.hero_menu_open = false;
                             }
+                        }
+                    });
+            }
+
+            // 6. CAJÓN DE BUILDS Y COUNTERS SITUACIONALES (Solo en modo interactivo)
+            if self.build_drawer_open && is_interactive {
+                ui.add_space(4.0);
+                ui.separator();
+                let hero_name = if hero_info.display_name == "None" {
+                    "General / Adaptable"
+                } else {
+                    hero_info.display_name.as_str()
+                };
+                let build = crate::builds::get_hero_build(hero_name);
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("⚔ Build: {}", build.hero_name))
+                            .size(10.5)
+                            .strong()
+                            .color(Color32::from_rgb(245, 158, 11)),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let close_btn = ui.add(
+                            egui::Button::new(
+                                RichText::new("✕")
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(148, 163, 184)),
+                            )
+                            .frame(false),
+                        );
+                        if close_btn.clicked() {
+                            self.build_drawer_open = false;
+                        }
+                        if close_btn.hovered() {
+                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        }
+                    });
+                });
+
+                egui::ScrollArea::vertical()
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        // Core Items
+                        ui.label(RichText::new("▸ Core Items:").size(10.0).strong().color(Color32::from_rgb(226, 232, 240)));
+                        ui.label(
+                            RichText::new(build.get_items(crate::builds::ItemStage::Core).join(" • "))
+                                .size(9.5)
+                                .color(Color32::from_rgb(245, 158, 11)),
+                        );
+
+                        ui.add_space(2.0);
+                        // Early & Late
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Early:").size(9.0).color(Color32::from_rgb(148, 163, 184)));
+                            ui.label(RichText::new(build.get_items(crate::builds::ItemStage::Early).join(", ")).size(9.0).color(Color32::from_rgb(203, 213, 225)));
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Late:").size(9.0).color(Color32::from_rgb(148, 163, 184)));
+                            ui.label(RichText::new(build.get_items(crate::builds::ItemStage::Late).join(", ")).size(9.0).color(Color32::from_rgb(203, 213, 225)));
+                        });
+
+                        // Situational Counters
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("▸ Counters Situacionales:").size(10.0).strong().color(Color32::from_rgb(239, 68, 68)));
+                        for counter in build.counters {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(format!("• {}:", counter.threat)).size(9.0).color(Color32::from_rgb(248, 113, 113)));
+                                ui.label(RichText::new(counter.counter).size(9.0).strong().color(Color32::from_rgb(254, 240, 138)));
+                            });
                         }
                     });
             }
