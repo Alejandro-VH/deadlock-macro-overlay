@@ -185,7 +185,6 @@ fn main() -> eframe::Result<()> {
         .spawn(move || {
             let mut cached_hwnd = HWND(std::ptr::null_mut());
             let mut prev_box_down = false;
-            let mut prev_boss_down = false;
             let mut prev_interactive_down = false;
 
             loop {
@@ -225,20 +224,16 @@ fn main() -> eframe::Result<()> {
                 };
 
                 if in_deadlock || is_overlay_foreground {
-                    let (key_box, key_boss, key_inter) = {
+                    let (key_box, key_inter) = {
                         let cfg = config_clone.read().unwrap();
-                        (cfg.key_box_timer, cfg.key_midboss, cfg.key_interactive)
+                        (cfg.key_box_timer, cfg.key_interactive)
                     };
 
                     let is_box_down = in_deadlock && unsafe { (GetAsyncKeyState(key_box as i32) as u16 & 0x8000) != 0 };
-                    let is_boss_down = in_deadlock && unsafe { (GetAsyncKeyState(key_boss as i32) as u16 & 0x8000) != 0 };
                     let is_inter_down = unsafe { (GetAsyncKeyState(key_inter as i32) as u16 & 0x8000) != 0 };
 
                     if is_box_down && !prev_box_down {
                         let _ = cmd_tx_clone.send(AppCommand::ToggleBoxTimer);
-                    }
-                    if is_boss_down && !prev_boss_down {
-                        let _ = cmd_tx_clone.send(AppCommand::ToggleMidBoss);
                     }
                     if is_inter_down && !prev_interactive_down {
                         let _ = cmd_tx_clone.send(AppCommand::ResetMatch);
@@ -246,12 +241,10 @@ fn main() -> eframe::Result<()> {
                     }
 
                     prev_box_down = is_box_down;
-                    prev_boss_down = is_boss_down;
                     prev_interactive_down = is_inter_down;
                 } else {
                     // Reset key states when neither Deadlock nor Overlay has focus
                     prev_box_down = false;
-                    prev_boss_down = false;
                     prev_interactive_down = false;
                 }
 
@@ -337,7 +330,6 @@ fn main() -> eframe::Result<()> {
 #[derive(Debug, Clone, Copy)]
 enum AppCommand {
     ToggleBoxTimer,
-    ToggleMidBoss,
     ResetMatch,
     ReloadConfig,
     ExitApp,
@@ -361,15 +353,8 @@ impl eframe::App for AppWrapper {
             match cmd {
                 AppCommand::ToggleBoxTimer => {
                     let now = self.inner.clock.current_seconds();
-                    if self.inner.scheduler.boxes.toggle(now) {
-                        self.inner.audio.play_box_start();
-                    }
-                }
-                AppCommand::ToggleMidBoss => {
-                    let now = self.inner.clock.current_seconds();
-                    if self.inner.scheduler.midboss.toggle_kill(now) {
-                        self.inner.audio.play_boss_start();
-                    }
+                    self.inner.scheduler.boxes.start_or_restart(now);
+                    self.inner.audio.play_box_start();
                 }
                 AppCommand::ResetMatch => self.inner.reset_match(),
                 AppCommand::ReloadConfig => self.inner.reload_config(self.screen_w, self.screen_h),

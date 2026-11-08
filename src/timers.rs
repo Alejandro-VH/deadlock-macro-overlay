@@ -1,27 +1,58 @@
 /// Event types tracked by the Deadlock macro overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EventKind {
-    T1Camps,          // Initial small jungle camps unlock at 02:00
-    BreakableCrates,  // Wooden boxes and golden statues spawn at 03:00
-    BridgeBuffs,      // Bridge powerup runes at 05:00 and every 5:00 thereafter
-    T2Camps,          // Medium jungle unlock at 07:00
-    SinnersSacrifice, // Sinner's Sacrifice slot machines & hard jungle (T3) unlock at 08:00
-    SoulUrn,          // Soul Urn spawn at 10:00 and every 5:00 thereafter
-    MidBossSpawn,     // Mid Boss initial appearance in the central pit at 10:00
-    MidBossRespawn,   // Dynamic Mid Boss respawn countdown following a kill (F9)
+    // Unique Fixed Events
+    T1Camps,             // 120s (02:00): "Campamentos T1"
+    BreakableCrates,     // 180s (03:00): "Cajas y Estatuas"
+    T2Camps,             // 300s (05:00): "Campamentos T2"
+    GuardiansZeroResist, // 360s (06:00): "Guardians caen a 0% Resistencia"
+    SinnersSacrifice,    // 480s (08:00): "Campamentos T3 y Sinner's Sacrifice"
+    WalkersZeroResist,   // 540s (09:00): "Walkers caen a 0% Resistencia"
+    MidBossAvailable,    // 600s (10:00): "Mid Boss Disponible y Cajas de Mid"
+    UnstableRift,        // 660s (11:00): "Ventana 1er Unstable Rift (11:00-13:00)"
+    WalkersBonusDamage,  // 1080s (18:00): "Walkers reciben un +65% Daño"
+    Waves25s,            // 1200s (20:00): "Oleadas cada 25s"
+    GoldenStatuesT2,     // 1800s (30:00): "Estatuas doradas pasan a Tier 2"
+    Waves20sAndHealth,   // 2100s (35:00): "Oleadas cada 20s y +50% Vida"
+    BridgeBuffsMaxPower, // 2400s (40:00): "Bridge Buffs Poder Máximo"
+
+    // Cyclic Events (every 300s)
+    BridgeBuffs,         // 300s, 600s, 900s...: "Bridge Buffs"
+    SoulUrnYellow,       // (next_urn_sec / 300) % 2 == 0: "Soul Urn Amarilla"
+    SoulUrnGreen,        // (next_urn_sec / 300) % 2 == 1: "Soul Urn Verde"
+
+    // Manual Event (F8)
+    BoxRoute,            // 180s (3:00): "Ruta de Cajas"
+
+    // Legacy variants for backwards compatibility
+    MidBossSpawn,
+    MidBossRespawn,
+    SoulUrn,
 }
 
 impl EventKind {
     pub fn display_name(&self) -> &'static str {
         match self {
-            EventKind::T1Camps => "Jungla T1 (Pequeña)",
-            EventKind::BreakableCrates => "Cajas & Estatuas",
+            EventKind::T1Camps => "Campamentos T1",
+            EventKind::BreakableCrates => "Cajas y Estatuas",
+            EventKind::T2Camps => "Campamentos T2",
+            EventKind::GuardiansZeroResist => "Guardians caen a 0% Resistencia",
+            EventKind::SinnersSacrifice => "Campamentos T3 y Sinner's Sacrifice",
+            EventKind::WalkersZeroResist => "Walkers caen a 0% Resistencia",
+            EventKind::MidBossAvailable => "Mid Boss Disponible y Cajas de Mid",
+            EventKind::UnstableRift => "Ventana 1er Unstable Rift (11:00-13:00)",
+            EventKind::WalkersBonusDamage => "Walkers reciben un +65% Daño",
+            EventKind::Waves25s => "Oleadas cada 25s",
+            EventKind::GoldenStatuesT2 => "Estatuas doradas pasan a Tier 2",
+            EventKind::Waves20sAndHealth => "Oleadas cada 20s y +50% Vida",
+            EventKind::BridgeBuffsMaxPower => "Bridge Buffs Poder Máximo",
             EventKind::BridgeBuffs => "Bridge Buffs",
-            EventKind::T2Camps => "Jungla T2 (Mediana)",
-            EventKind::SinnersSacrifice => "Sinner's & Jungla T3",
-            EventKind::SoulUrn => "Soul Urn",
-            EventKind::MidBossSpawn => "Mid Boss Spawn",
+            EventKind::SoulUrnYellow => "Soul Urn Amarilla",
+            EventKind::SoulUrnGreen => "Soul Urn Verde",
+            EventKind::BoxRoute => "Ruta de Cajas",
+            EventKind::MidBossSpawn => "Mid Boss Disponible y Cajas de Mid",
             EventKind::MidBossRespawn => "Mid Boss Respawn",
+            EventKind::SoulUrn => "Soul Urn",
         }
     }
 }
@@ -64,12 +95,21 @@ impl MacroEvent {
         match self.kind {
             EventKind::T1Camps => 120,
             EventKind::BreakableCrates => 60,
-            EventKind::BridgeBuffs => 300,
             EventKind::T2Camps => 120,
-            EventKind::SinnersSacrifice => 60,
-            EventKind::SoulUrn => 300,
-            EventKind::MidBossSpawn => 120,
-            EventKind::MidBossRespawn => 300,
+            EventKind::GuardiansZeroResist => 60,
+            EventKind::SinnersSacrifice => 120,
+            EventKind::WalkersZeroResist => 60,
+            EventKind::MidBossAvailable | EventKind::MidBossSpawn => 60,
+            EventKind::UnstableRift => 60,
+            EventKind::WalkersBonusDamage => 120,
+            EventKind::Waves25s => 120,
+            EventKind::GoldenStatuesT2 => 120,
+            EventKind::Waves20sAndHealth => 120,
+            EventKind::BridgeBuffsMaxPower => 120,
+            EventKind::BridgeBuffs => 300,
+            EventKind::SoulUrnYellow | EventKind::SoulUrnGreen | EventKind::SoulUrn => 300,
+            EventKind::BoxRoute => 180,
+            _ => 120,
         }
     }
 
@@ -115,16 +155,16 @@ impl BoxRouteTracker {
         Self::default()
     }
 
-    /// Toggles the 180s (3m) box route countdown.
-    /// Returns true if started, false if cancelled.
+    /// Activates or restarts the 180s (3m) box route countdown.
+    pub fn start_or_restart(&mut self, match_time: u32) {
+        self.active_target = Some(match_time + 180);
+    }
+
+    /// Activates or restarts the 180s (3m) box route countdown.
+    /// Returns true if started/restarted.
     pub fn toggle(&mut self, match_time: u32) -> bool {
-        if self.is_active(match_time) {
-            self.active_target = None;
-            false
-        } else {
-            self.active_target = Some(match_time + 180);
-            true
-        }
+        self.start_or_restart(match_time);
+        true
     }
 
     pub fn is_active(&self, match_time: u32) -> bool {
@@ -222,23 +262,8 @@ impl MacroScheduler {
     pub fn calculate_events(&self, current_seconds: u32) -> Vec<MacroEvent> {
         let mut events = Vec::new();
 
-        // 1. Jungla T1 / Pequeña (Hito inicial a los 120s / 02:00, visible hasta 10s después)
-        if current_seconds <= 130 {
-            events.push(MacroEvent {
-                kind: EventKind::T1Camps,
-                target_time: 120,
-            });
-        }
-
-        // 2. Cajas & Estatuas de Almas (Primer spawn a los 180s / 03:00, visible hasta 10s después)
-        if current_seconds <= 190 {
-            events.push(MacroEvent {
-                kind: EventKind::BreakableCrates,
-                target_time: 180,
-            });
-        }
-
-        // 3. Bridge Buffs (Primer spawn a los 300s / 05:00, luego cada 300s: 10:00, 15:00, 20:00...)
+        // --- B. Eventos Fijos Cíclicos (cada 300s / 5:00) ---
+        // 1. Bridge Buffs: Primer spawn a los 300s (05:00), luego cada 300s
         let bridge_target = if current_seconds < 300 {
             300
         } else {
@@ -253,21 +278,76 @@ impl MacroScheduler {
             kind: EventKind::BridgeBuffs,
             target_time: bridge_target,
         });
-        // Include subsequent recurring cycle for horizon projection
         events.push(MacroEvent {
             kind: EventKind::BridgeBuffs,
             target_time: bridge_target + 300,
         });
 
-        // 4. Jungla T2 / Mediana (Hito inicial a los 420s / 07:00, visible hasta 10s después)
-        if current_seconds <= 430 {
+        // 2. Soul Urn: Primer spawn a los 600s (10:00), luego cada 300s (Amarilla en pares, Verde en impares)
+        let urn_target = if current_seconds < 600 {
+            600
+        } else {
+            let cycle_start = (current_seconds / 300) * 300;
+            if current_seconds <= cycle_start + 10 {
+                cycle_start
+            } else {
+                cycle_start + 300
+            }
+        };
+        let urn_kind = if (urn_target / 300) % 2 == 0 {
+            EventKind::SoulUrnYellow
+        } else {
+            EventKind::SoulUrnGreen
+        };
+        events.push(MacroEvent {
+            kind: urn_kind,
+            target_time: urn_target,
+        });
+        let next_urn_target = urn_target + 300;
+        let next_urn_kind = if (next_urn_target / 300) % 2 == 0 {
+            EventKind::SoulUrnYellow
+        } else {
+            EventKind::SoulUrnGreen
+        };
+        events.push(MacroEvent {
+            kind: next_urn_kind,
+            target_time: next_urn_target,
+        });
+
+        // --- A. Eventos Fijos Únicos (visibles hasta 10s después de ocurrir) ---
+        // 120s (02:00): "Campamentos T1"
+        if current_seconds <= 130 {
             events.push(MacroEvent {
-                kind: EventKind::T2Camps,
-                target_time: 420,
+                kind: EventKind::T1Camps,
+                target_time: 120,
             });
         }
 
-        // 5. Sinner's Sacrifice y Jungla T3 (Hito a los 480s / 08:00, visible hasta 10s después)
+        // 180s (03:00): "Cajas y Estatuas"
+        if current_seconds <= 190 {
+            events.push(MacroEvent {
+                kind: EventKind::BreakableCrates,
+                target_time: 180,
+            });
+        }
+
+        // 300s (05:00): "Campamentos T2"
+        if current_seconds <= 310 {
+            events.push(MacroEvent {
+                kind: EventKind::T2Camps,
+                target_time: 300,
+            });
+        }
+
+        // 360s (06:00): "Guardians caen a 0% Resistencia"
+        if current_seconds <= 370 {
+            events.push(MacroEvent {
+                kind: EventKind::GuardiansZeroResist,
+                target_time: 360,
+            });
+        }
+
+        // 480s (08:00): "Campamentos T3 y Sinner's Sacrifice"
         if current_seconds <= 490 {
             events.push(MacroEvent {
                 kind: EventKind::SinnersSacrifice,
@@ -275,33 +355,78 @@ impl MacroScheduler {
             });
         }
 
-        // 6. Soul Urn (Primer spawn a los 600s / 10:00, luego cada 300s: 15:00, 20:00, 25:00...)
-        let urn_target = if current_seconds < 600 {
-            600
-        } else {
-            let cycle_start = 600 + ((current_seconds - 600) / 300) * 300;
-            if current_seconds <= cycle_start + 10 {
-                cycle_start
-            } else {
-                cycle_start + 300
-            }
-        };
-        events.push(MacroEvent {
-            kind: EventKind::SoulUrn,
-            target_time: urn_target,
-        });
-        // Include subsequent recurring cycle for horizon projection
-        events.push(MacroEvent {
-            kind: EventKind::SoulUrn,
-            target_time: urn_target + 300,
-        });
-
-        // 7. Mid Boss Spawn Inicial a los 10:00 (600s) si nunca ha muerto aún
-        if self.midboss.kills == 0 && current_seconds <= 610 {
+        // 540s (09:00): "Walkers caen a 0% Resistencia"
+        if current_seconds <= 550 {
             events.push(MacroEvent {
-                kind: EventKind::MidBossSpawn,
+                kind: EventKind::WalkersZeroResist,
+                target_time: 540,
+            });
+        }
+
+        // 600s (10:00): "Mid Boss Disponible y Cajas de Mid"
+        if current_seconds <= 610 {
+            events.push(MacroEvent {
+                kind: EventKind::MidBossAvailable,
                 target_time: 600,
             });
+        }
+
+        // 660s (11:00): "Ventana 1er Unstable Rift (11:00-13:00)"
+        if current_seconds <= 670 {
+            events.push(MacroEvent {
+                kind: EventKind::UnstableRift,
+                target_time: 660,
+            });
+        }
+
+        // 1080s (18:00): "Walkers reciben un +65% Daño"
+        if current_seconds <= 1090 {
+            events.push(MacroEvent {
+                kind: EventKind::WalkersBonusDamage,
+                target_time: 1080,
+            });
+        }
+
+        // 1200s (20:00): "Oleadas cada 25s"
+        if current_seconds <= 1210 {
+            events.push(MacroEvent {
+                kind: EventKind::Waves25s,
+                target_time: 1200,
+            });
+        }
+
+        // 1800s (30:00): "Estatuas doradas pasan a Tier 2"
+        if current_seconds <= 1810 {
+            events.push(MacroEvent {
+                kind: EventKind::GoldenStatuesT2,
+                target_time: 1800,
+            });
+        }
+
+        // 2100s (35:00): "Oleadas cada 20s y +50% Vida"
+        if current_seconds <= 2110 {
+            events.push(MacroEvent {
+                kind: EventKind::Waves20sAndHealth,
+                target_time: 2100,
+            });
+        }
+
+        // 2400s (40:00): "Bridge Buffs Poder Máximo"
+        if current_seconds <= 2410 {
+            events.push(MacroEvent {
+                kind: EventKind::BridgeBuffsMaxPower,
+                target_time: 2400,
+            });
+        }
+
+        // --- C. Evento Manual con F8 (Ruta de Cajas) ---
+        if let Some(target) = self.boxes.active_target {
+            if current_seconds <= target + 10 {
+                events.push(MacroEvent {
+                    kind: EventKind::BoxRoute,
+                    target_time: target,
+                });
+            }
         }
 
         // Ordenar cronológicamente por tiempo objetivo

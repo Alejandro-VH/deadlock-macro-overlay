@@ -44,36 +44,49 @@ fn test_macro_milestones_progression() {
     assert_eq!(next[0].kind, EventKind::BreakableCrates);
     assert_eq!(next[0].target_time, 180);
 
-    // 3. At 200s (03:20), the immediate next event is Bridge Buffs at 300s (05:00)
+    // 3. At 200s (03:20), the immediate next events are at 300s (05:00): Bridge Buffs AND Campamentos T2
     let next = scheduler.get_immediate_next_events(200);
-    assert_eq!(next.len(), 1);
-    assert_eq!(next[0].kind, EventKind::BridgeBuffs);
+    assert_eq!(next.len(), 2);
+    assert!(next.iter().any(|e| e.kind == EventKind::BridgeBuffs));
+    assert!(next.iter().any(|e| e.kind == EventKind::T2Camps));
     assert_eq!(next[0].target_time, 300);
 
-    // 3. At 315s (05:15), the immediate next event is Jungla T2 (Mediana) at 420s (07:00)
+    // 4. At 315s (05:15), the immediate next event is Guardians at 360s (06:00)
     let next = scheduler.get_immediate_next_events(315);
     assert_eq!(next.len(), 1);
-    assert_eq!(next[0].kind, EventKind::T2Camps);
-    assert_eq!(next[0].target_time, 420);
+    assert_eq!(next[0].kind, EventKind::GuardiansZeroResist);
+    assert_eq!(next[0].target_time, 360);
 
-    // 4. At 435s (07:15), the immediate next event is Sinner's & Jungla T3 at 480s (08:00)
-    let next = scheduler.get_immediate_next_events(435);
+    // 5. At 400s (06:40), next is Campamentos T3 & Sinner's Sacrifice at 480s (08:00)
+    let next = scheduler.get_immediate_next_events(400);
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].kind, EventKind::SinnersSacrifice);
     assert_eq!(next[0].target_time, 480);
 
-    // 5. At 500s (08:20), the immediate next events are at 600s (10:00): Bridge + Urn + MidBoss
+    // 6. At 500s (08:20), next is Walkers Weak at 540s (09:00)
     let next = scheduler.get_immediate_next_events(500);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::WalkersZeroResist);
+    assert_eq!(next[0].target_time, 540);
+
+    // 7. At 555s (09:15), next events are at 600s (10:00): Bridge + Urn Yellow + MidBoss
+    let next = scheduler.get_immediate_next_events(555);
     assert!(next.iter().all(|e| e.target_time == 600));
     assert!(next.iter().any(|e| e.kind == EventKind::BridgeBuffs));
-    assert!(next.iter().any(|e| e.kind == EventKind::SoulUrn));
-    assert!(next.iter().any(|e| e.kind == EventKind::MidBossSpawn));
+    assert!(next.iter().any(|e| e.kind == EventKind::SoulUrnYellow));
+    assert!(next.iter().any(|e| e.kind == EventKind::MidBossAvailable));
 
-    // 6. At 615s (10:15), next events are at 900s (15:00)
+    // 8. At 615s (10:15), next is Unstable Rift at 660s (11:00)
     let next = scheduler.get_immediate_next_events(615);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::UnstableRift);
+    assert_eq!(next[0].target_time, 660);
+
+    // 9. At 700s (11:40), next is 900s (15:00): Bridge + Urn Green
+    let next = scheduler.get_immediate_next_events(700);
     assert!(next.iter().all(|e| e.target_time == 900));
     assert!(next.iter().any(|e| e.kind == EventKind::BridgeBuffs));
-    assert!(next.iter().any(|e| e.kind == EventKind::SoulUrn));
+    assert!(next.iter().any(|e| e.kind == EventKind::SoulUrnGreen));
 }
 
 #[test]
@@ -103,21 +116,21 @@ fn test_bridge_buffs_schedule() {
 fn test_soul_urn_schedule() {
     let scheduler = MacroScheduler::default();
 
-    // Before 10m (e.g. 570s), Urn is pending at 600s
+    // Before 10m (e.g. 570s), Urn is pending at 600s (Yellow)
     let events = scheduler.calculate_events(570);
-    let urn = events.iter().find(|e| e.kind == EventKind::SoulUrn).expect("Soul Urn not found");
+    let urn = events.iter().find(|e| e.kind == EventKind::SoulUrnYellow).expect("Soul Urn Yellow not found");
     assert_eq!(urn.target_time, 600);
     assert_eq!(urn.remaining_seconds(570), 30);
     assert_eq!(urn.status(570), EventStatus::Warning);
 
     // At 10m00s (600s), Urn is Active
     let events = scheduler.calculate_events(600);
-    let urn = events.iter().find(|e| e.kind == EventKind::SoulUrn).expect("Soul Urn not found");
+    let urn = events.iter().find(|e| e.kind == EventKind::SoulUrnYellow).expect("Soul Urn Yellow not found");
     assert_eq!(urn.status(600), EventStatus::Active);
 
-    // At 10m15s (615s), Next Urn is at 15m00s (900s)
+    // At 10m15s (615s), Next Urn is at 15m00s (900s) (Green)
     let events = scheduler.calculate_events(615);
-    let urn = events.iter().find(|e| e.kind == EventKind::SoulUrn).expect("Soul Urn not found");
+    let urn = events.iter().find(|e| e.kind == EventKind::SoulUrnGreen).expect("Soul Urn Green not found");
     assert_eq!(urn.target_time, 900);
 }
 
@@ -253,26 +266,11 @@ fn test_box_route_tracker_toggle() {
     // After 10s grace period past 0, expires
     assert_eq!(tracker.get_remaining(491), None);
 
-    // 2. Second toggle while active cancels it immediately
-    let active_after_toggle = tracker.toggle(300);
-    assert!(!active_after_toggle);
-    assert_eq!(tracker.get_remaining(300), None);
-}
-
-#[test]
-fn test_mid_boss_tracker_toggle() {
-    let mut tracker = MidBossTracker::new();
-    assert_eq!(tracker.get_active_respawn(600), None);
-
-    // 1. First press: records kill, starts 7m (420s) respawn -> 1020s
-    let active = tracker.toggle_kill(600);
-    assert!(active);
-    assert_eq!(tracker.get_active_respawn(600), Some(1020));
-
-    // 2. Second press while active: cancels it immediately
-    let active_after_toggle = tracker.toggle_kill(600);
-    assert!(!active_after_toggle);
-    assert_eq!(tracker.get_active_respawn(600), None);
+    // 2. Second toggle while active restarts the 180s countdown from current match time
+    let active_after_toggle = tracker.toggle(400);
+    assert!(active_after_toggle);
+    assert_eq!(tracker.get_remaining(400), Some(180));
+    assert_eq!(tracker.get_remaining(450), Some(130));
 }
 
 #[test]
@@ -291,10 +289,11 @@ fn test_corrected_cajas_and_jungle_spawns() {
     assert_eq!(next[0].kind, EventKind::BreakableCrates);
     assert_eq!(next[0].target_time, 180);
 
-    // At 200s (03:20), immediate next event is Bridge Buffs at 300s (05:00)
+    // At 200s (03:20), immediate next events are Bridge Buffs & Campamentos T2 at 300s (05:00)
     let next = scheduler.get_immediate_next_events(200);
-    assert_eq!(next.len(), 1);
-    assert_eq!(next[0].kind, EventKind::BridgeBuffs);
+    assert_eq!(next.len(), 2);
+    assert!(next.iter().any(|e| e.kind == EventKind::BridgeBuffs));
+    assert!(next.iter().any(|e| e.kind == EventKind::T2Camps));
     assert_eq!(next[0].target_time, 300);
 }
 
@@ -302,19 +301,19 @@ fn test_corrected_cajas_and_jungle_spawns() {
 fn test_dual_horizon_events() {
     let scheduler = MacroScheduler::default();
 
-    // At 285s (04:45), immediate is Bridge Buffs at 300s (05:00)
-    // and subsequent milestone is Jungla T2 at 420s (07:00)
+    // At 285s (04:45), immediate are Bridge Buffs & Campamentos T2 at 300s (05:00)
+    // and subsequent milestone is Guardians at 360s (06:00)
     let (immediate, next) = scheduler.get_immediate_and_next_events(285);
-    assert_eq!(immediate.len(), 1);
-    assert_eq!(immediate[0].kind, EventKind::BridgeBuffs);
+    assert_eq!(immediate.len(), 2);
+    assert!(immediate.iter().any(|e| e.kind == EventKind::BridgeBuffs));
+    assert!(immediate.iter().any(|e| e.kind == EventKind::T2Camps));
     assert_eq!(immediate[0].target_time, 300);
 
     assert!(next.is_some());
     let next_event = next.unwrap();
-    assert_eq!(next_event.kind, EventKind::T2Camps);
-    assert_eq!(next_event.target_time, 420);
+    assert_eq!(next_event.kind, EventKind::GuardiansZeroResist);
+    assert_eq!(next_event.target_time, 360);
 }
-
 
 #[test]
 fn test_grouped_horizons_simultaneous_events() {
@@ -328,20 +327,19 @@ fn test_grouped_horizons_simultaneous_events() {
     assert_eq!(imm.target_time, 600);
     assert_eq!(imm.remaining_seconds, 21);
     assert_eq!(imm.status, EventStatus::Warning);
-    // At 10:00 we have Bridge Buffs, Soul Urn, and Mid Boss Spawn
+    // At 10:00 we have Bridge Buffs, Soul Urn Yellow, and Mid Boss Spawn
     assert_eq!(imm.events.len(), 3);
     assert!(imm.events.iter().any(|e| e.kind == EventKind::BridgeBuffs));
-    assert!(imm.events.iter().any(|e| e.kind == EventKind::SoulUrn));
-    assert!(imm.events.iter().any(|e| e.kind == EventKind::MidBossSpawn));
+    assert!(imm.events.iter().any(|e| e.kind == EventKind::SoulUrnYellow));
+    assert!(imm.events.iter().any(|e| e.kind == EventKind::MidBossAvailable));
 
-    // Next milestone is at 15:00 (900s) with Bridge Buffs AND Soul Urn
+    // Next milestone is at 11:00 (660s) with Unstable Rift
     assert!(next.is_some(), "Next group must exist");
     let nxt = next.unwrap();
-    assert_eq!(nxt.target_time, 900);
-    assert_eq!(nxt.remaining_seconds, 321);
-    assert_eq!(nxt.events.len(), 2, "Next milestone at 15:00 must include both Bridge Buffs and Soul Urn");
-    assert!(nxt.events.iter().any(|e| e.kind == EventKind::BridgeBuffs));
-    assert!(nxt.events.iter().any(|e| e.kind == EventKind::SoulUrn));
+    assert_eq!(nxt.target_time, 660);
+    assert_eq!(nxt.remaining_seconds, 81);
+    assert_eq!(nxt.events.len(), 1);
+    assert_eq!(nxt.events[0].kind, EventKind::UnstableRift);
 }
 
 #[test]

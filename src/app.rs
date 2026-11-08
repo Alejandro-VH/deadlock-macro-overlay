@@ -13,7 +13,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebindTarget {
     BoxTimer,
-    MidBoss,
     Interactive,
 }
 
@@ -78,7 +77,6 @@ pub struct DeadlockApp {
     pub config_menu_open: bool,
     pub rebinding: Option<RebindTarget>,
     pub last_box_rem: Option<u32>,
-    pub last_boss_rem: Option<u32>,
     pub last_log_poll_instant: Instant,
     pub current_window_size: Option<Vec2>,
     pub last_applied_scale: f32,
@@ -116,7 +114,6 @@ impl DeadlockApp {
             config_menu_open: false,
             rebinding: None,
             last_box_rem: None,
-            last_boss_rem: None,
             last_log_poll_instant: Instant::now(),
             current_window_size: None,
             last_applied_scale: initial_scale,
@@ -187,7 +184,6 @@ impl DeadlockApp {
         self.triggered_warnings.clear();
         self.hero_tracker.reset_hero_state();
         self.last_box_rem = None;
-        self.last_boss_rem = None;
     }
 
     pub fn reload_config(&mut self, screen_w: i32, screen_h: i32) {
@@ -246,7 +242,6 @@ impl eframe::App for DeadlockApp {
                 } else {
                     match target {
                         RebindTarget::BoxTimer => self.config.key_box_timer = vk,
-                        RebindTarget::MidBoss => self.config.key_midboss = vk,
                         RebindTarget::Interactive => self.config.key_interactive = vk,
                     }
                     let _ = self.config.save_to_file(&self.config_path);
@@ -267,7 +262,7 @@ impl eframe::App for DeadlockApp {
 
         let current_time = self.clock.current_seconds();
 
-        // Check completion transitions for box and boss audio chimes
+        // Check completion transitions for box route audio chime
         if is_game_running {
             let box_rem = self.scheduler.boxes.get_remaining(current_time);
             if let Some(rem) = box_rem {
@@ -276,18 +271,6 @@ impl eframe::App for DeadlockApp {
                 }
             }
             self.last_box_rem = box_rem;
-
-            let boss_rem = self
-                .scheduler
-                .midboss
-                .get_active_respawn(current_time)
-                .map(|r| r.saturating_sub(current_time));
-            if let Some(rem) = boss_rem {
-                if rem == 0 && self.last_boss_rem.is_some_and(|r| r > 0) {
-                    self.audio.play_boss_ready();
-                }
-            }
-            self.last_boss_rem = boss_rem;
         }
 
         let (immediate_group, next_group) = if is_game_running {
@@ -300,9 +283,9 @@ impl eframe::App for DeadlockApp {
             self.process_alerts(&grp.events);
         }
 
-        // Dynamic geometry: Clean HUD layout sizing with full vertical visibility
+        // Dynamic geometry: Clean HUD layout sizing
         let target_size = if self.config_menu_open && (is_interactive || !is_game_running) {
-            Vec2::new(260.0, 250.0)
+            Vec2::new(260.0, 220.0)
         } else if !is_game_running {
             Vec2::new(260.0, 68.0)
         } else {
@@ -310,8 +293,8 @@ impl eframe::App for DeadlockApp {
             let next_count = next_group.as_ref().map_or(0, |g| g.events.len());
             let has_next = next_group.is_some();
             let next_h = if has_next { 20.0 + (next_count as f32 * 16.0) } else { 0.0 };
-            let h = 130.0 + (event_count as f32 * 18.0) + next_h;
-            Vec2::new(260.0, h.clamp(185.0, 310.0))
+            let h = 60.0 + (event_count as f32 * 18.0) + next_h;
+            Vec2::new(260.0, h.clamp(115.0, 280.0))
         };
 
         let ppp = ctx.pixels_per_point();
@@ -550,24 +533,6 @@ impl eframe::App for DeadlockApp {
                     }
                 });
 
-                // Rebind Mid Boss
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Mid Boss:")
-                            .size(10.0)
-                            .color(Color32::from_rgb(203, 213, 225)),
-                    );
-                    let btn_text = if self.rebinding == Some(RebindTarget::MidBoss) {
-                        "Presiona tecla...".to_string()
-                    } else {
-                        key_to_display_name(self.config.key_midboss)
-                    };
-                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(9.5)));
-                    if btn.clicked() {
-                        self.rebinding = Some(RebindTarget::MidBoss);
-                    }
-                });
-
                 // Rebind Reload Overlay Hotkey
                 ui.horizontal(|ui| {
                     ui.label(
@@ -725,7 +690,7 @@ impl eframe::App for DeadlockApp {
                         );
                     }
 
-                    // Subsequent Milestone Horizon Preview (Clean text, no card container)
+                    // Subsequent Milestone Horizon Preview with independent bullet items
                     if let Some(ref next) = next_group {
                         ui.add_space(3.0);
                         let nxt_target_str = format_time_mmss(next.target_time);
@@ -746,118 +711,6 @@ impl eframe::App for DeadlockApp {
                             });
                         }
                     }
-
-                    // Divider before fixed bottom farm trackers
-                    ui.add_space(3.0);
-                    ui.separator();
-                    ui.add_space(1.0);
-
-                    // Fixed Bottom Tracker 1: Box Route Tracker
-                    let box_key_name = key_to_display_name(self.config.key_box_timer);
-                    let box_rem = self.scheduler.boxes.get_remaining(current_time);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Ruta Cajas")
-                                .size(10.0)
-                                .color(Color32::from_rgb(203, 213, 225)),
-                        );
-                        // Keycap [F8]
-                        egui::Frame::none()
-                            .fill(Color32::from_rgb(30, 37, 48))
-                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(55, 65, 81)))
-                            .rounding(Rounding::same(3.0))
-                            .inner_margin(Margin::symmetric(4.0, 1.0))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(box_key_name)
-                                        .size(8.5)
-                                        .monospace()
-                                        .color(Color32::from_rgb(226, 232, 240)),
-                                );
-                            });
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(2.0);
-                            if let Some(rem) = box_rem {
-                                if rem == 0 {
-                                    ui.label(
-                                        RichText::new("LISTO")
-                                            .strong()
-                                            .size(10.0)
-                                            .color(Color32::from_rgb(72, 239, 128)),
-                                    );
-                                } else {
-                                    ui.label(
-                                        RichText::new(format!("{:02}:{:02}", rem / 60, rem % 60))
-                                            .strong()
-                                            .monospace()
-                                            .size(10.0)
-                                            .color(Color32::from_rgb(245, 158, 11)),
-                                    );
-                                }
-                            } else {
-                                ui.label(
-                                    RichText::new("LISTO")
-                                        .size(10.0)
-                                        .color(Color32::from_rgb(100, 116, 139)),
-                                );
-                            }
-                        });
-                    });
-
-                    // Fixed Bottom Tracker 2: Mid Boss Tracker
-                    let boss_key_name = key_to_display_name(self.config.key_midboss);
-                    let boss_respawn = self.scheduler.midboss.get_active_respawn(current_time);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Mid Boss")
-                                .size(10.0)
-                                .color(Color32::from_rgb(203, 213, 225)),
-                        );
-                        // Keycap [F9]
-                        egui::Frame::none()
-                            .fill(Color32::from_rgb(30, 37, 48))
-                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(55, 65, 81)))
-                            .rounding(Rounding::same(3.0))
-                            .inner_margin(Margin::symmetric(4.0, 1.0))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(boss_key_name)
-                                        .size(8.5)
-                                        .monospace()
-                                        .color(Color32::from_rgb(226, 232, 240)),
-                                );
-                            });
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(2.0);
-                            if let Some(respawn) = boss_respawn {
-                                let rem = respawn.saturating_sub(current_time);
-                                if rem == 0 {
-                                    ui.label(
-                                        RichText::new("LISTO")
-                                            .strong()
-                                            .size(10.0)
-                                            .color(Color32::from_rgb(72, 239, 128)),
-                                    );
-                                } else {
-                                    ui.label(
-                                        RichText::new(format!("{:02}:{:02}", rem / 60, rem % 60))
-                                            .strong()
-                                            .monospace()
-                                            .size(10.0)
-                                            .color(Color32::from_rgb(251, 146, 60)),
-                                    );
-                                }
-                            } else {
-                                ui.label(
-                                    RichText::new("LISTO")
-                                        .size(10.0)
-                                        .color(Color32::from_rgb(100, 116, 139)),
-                                );
-                            }
-                        });
-                    });
                 }
             }
         });
