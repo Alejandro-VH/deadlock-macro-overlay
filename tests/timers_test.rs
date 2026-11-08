@@ -223,6 +223,22 @@ fn test_clock_filter_ignores_duplicate_second_resets() {
 }
 
 #[test]
+fn test_milestone_warning_status_at_30s_boundary() {
+    let event = MacroEvent {
+        kind: EventKind::BridgeBuffs,
+        target_time: 300,
+    };
+    // At 269s (31s remaining), still upcoming
+    assert_eq!(event.status(269), EventStatus::Upcoming);
+    // At 270s (30s remaining), enters Warning status
+    assert_eq!(event.status(270), EventStatus::Warning);
+    // At 299s (1s remaining), remains in Warning status
+    assert_eq!(event.status(299), EventStatus::Warning);
+    // At 300s (0s remaining), enters Active status
+    assert_eq!(event.status(300), EventStatus::Active);
+}
+
+#[test]
 fn test_box_route_tracker_toggle() {
     let mut tracker = BoxRouteTracker::new();
     assert_eq!(tracker.get_remaining(300), None);

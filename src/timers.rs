@@ -439,8 +439,8 @@ impl ClockFilter {
     /// Feeds raw OCR reading. Returns true if the clock was updated directly from OCR.
     pub fn feed_ocr_reading(&mut self, raw_time: Option<u32>) -> bool {
         if let Some(raw) = raw_time {
-            self.is_active = true;
-            if self.current_seconds == 0 {
+            if !self.is_active {
+                self.is_active = true;
                 self.current_seconds = raw;
                 self.pending_candidate = None;
                 self.consecutive_reads = 0;

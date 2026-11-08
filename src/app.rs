@@ -77,7 +77,7 @@ pub fn start_native_window_drag() -> Option<(i32, i32)> {
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        let lparam = ((pt.y as isize) << 16) | ((pt.x as isize) & 0xFFFF);
+        let lparam = (((pt.y as u16 as usize) << 16) | (pt.x as u16 as usize)) as isize;
 
         let _ = ReleaseCapture();
         SendMessageW(
@@ -192,7 +192,9 @@ impl DeadlockApp {
 
             if status == EventStatus::Warning && !self.triggered_warnings.contains(&key) {
                 self.triggered_warnings.insert(key);
-                trigger_warn = true;
+                if self.config.alert_30s_sound {
+                    trigger_warn = true;
+                }
             } else if status == EventStatus::Active && !self.triggered_alerts.contains(&key) {
                 self.triggered_alerts.insert(key);
                 trigger_active = true;
@@ -220,14 +222,31 @@ impl DeadlockApp {
 
 impl eframe::App for DeadlockApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Disable text selection globally so mouse interaction is pure controls/dragging
-        ctx.style_mut(|s| s.interaction.selectable_labels = false);
+        // 1. Purge Tab key events from egui to completely eliminate focus cycling / outline box jumping
+        ctx.input_mut(|i| {
+            i.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Tab, .. }));
+        });
+
+        // 2. Disable native keyboard zoom (Ctrl +, Ctrl -, Ctrl 0)
+        ctx.options_mut(|o| {
+            o.zoom_with_keyboard = false;
+        });
+
+        // 3. Disable text selection and widget focus expansion rings
+        ctx.style_mut(|s| {
+            s.interaction.selectable_labels = false;
+            s.visuals.widgets.active.expansion = 0.0;
+            s.visuals.widgets.hovered.expansion = 0.0;
+        });
+
+        // 4. Apply configured HUD scale via zoom factor to preserve native OS DPI scaling
+        ctx.set_zoom_factor(self.config.hud_scale);
 
         let is_game_running = self.game_running.load(Ordering::Relaxed);
         let is_interactive = self.interactive_mode.load(Ordering::Relaxed);
 
-        // Automatic drawer and rebinding state management
-        if !is_interactive {
+        // Automatic drawer and rebinding state management (only force close during active gameplay)
+        if is_game_running && !is_interactive {
             self.config_menu_open = false;
             self.rebinding = None;
         }
@@ -295,16 +314,16 @@ impl eframe::App for DeadlockApp {
             self.process_alerts(&grp.events);
         }
 
-        // Dynamic geometry: Option A vertical layout sizing with comfortable breathing room
-        let target_size = if self.config_menu_open && is_interactive {
-            Vec2::new(240.0, 205.0)
+        // Dynamic geometry: Tactical Noir Pro layout sizing
+        let target_size = if self.config_menu_open && (is_interactive || !is_game_running) {
+            Vec2::new(245.0, 225.0)
         } else if !is_game_running {
-            Vec2::new(240.0, 85.0)
+            Vec2::new(245.0, 65.0)
         } else {
             let event_count = immediate_group.as_ref().map_or(1, |g| g.events.len().max(1));
             let has_next = next_group.is_some();
-            let h = 105.0 + 18.0 + (event_count as f32 * 18.0) + (if has_next { 34.0 } else { 0.0 });
-            Vec2::new(240.0, h.clamp(145.0, 225.0))
+            let h = 108.0 + 18.0 + (event_count as f32 * 18.0) + (if has_next { 34.0 } else { 0.0 });
+            Vec2::new(245.0, h.clamp(150.0, 235.0))
         };
 
         if self.current_window_size != Some(target_size) {
@@ -312,24 +331,25 @@ impl eframe::App for DeadlockApp {
             self.current_window_size = Some(target_size);
         }
 
-        // Deadlock Noir styling: deep charcoal glassmorphism with subtle slate border
+        // Tactical Noir Pro styling: deep charcoal glassmorphism with configurable opacity
+        let alpha = (self.config.bg_opacity * 255.0).round().clamp(50.0, 255.0) as u8;
         let frame = egui::Frame::none()
-            .fill(Color32::from_rgba_premultiplied(13, 17, 23, 235))
+            .fill(Color32::from_rgba_premultiplied(13, 17, 23, alpha))
             .stroke(Stroke::new(1.0_f32, Color32::from_rgb(37, 45, 61)))
             .inner_margin(Margin::symmetric(8.0, 6.0))
             .rounding(Rounding::same(6.0));
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            // 1. TOP MICRO PROGRESS BAR (2px)
-            let (bar_rect, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.0), egui::Sense::hover());
-            ui.painter().rect_filled(
-                bar_rect,
-                Rounding::same(1.0),
-                Color32::from_rgb(22, 27, 34),
-            );
-
+            // 1. TOP MICRO PROGRESS BAR (2px) - Only visible when game is actively running
             if is_game_running {
+                let (bar_rect, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.0), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    bar_rect,
+                    Rounding::same(1.0),
+                    Color32::from_rgb(22, 27, 34),
+                );
+
                 if let Some(ref group) = immediate_group {
                     if let Some(first_ev) = group.events.first() {
                         let progress = first_ev.progress(current_time);
@@ -347,11 +367,10 @@ impl eframe::App for DeadlockApp {
                             .rect_filled(filled_rect, Rounding::same(1.0), bar_color);
                     }
                 }
+                ui.add_space(3.0);
             }
 
-            ui.add_space(4.0);
-
-            // 2. HEADER ROW: Clock (Left) | Reset [↺] | Mute [Vol/Mute] | Config [⚙] | Grip [::]
+            // 2. HEADER ROW
             ui.horizontal(|ui| {
                 let clock_text = if !is_game_running {
                     "--:--".to_string()
@@ -375,6 +394,24 @@ impl eframe::App for DeadlockApp {
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Close button [✕] - Only visible when Deadlock is NOT running
+                    if !is_game_running {
+                        let close_btn = ui.add(
+                            egui::Button::new(
+                                RichText::new("✕")
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(239, 68, 68)),
+                            )
+                            .frame(false),
+                        );
+                        if close_btn.clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if close_btn.hovered() {
+                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        }
+                    }
+
                     // Native painter-drawn grip dots (6-dot matrix: 2 columns of 3 dots, 1.2px radius)
                     let (handle_rect, handle_response) = ui.allocate_exact_size(
                         Vec2::new(14.0, 14.0),
@@ -408,8 +445,8 @@ impl eframe::App for DeadlockApp {
                         }
                     }
 
-                    // Config Drawer Toggle [⚙] (Interactive mode only)
-                    if is_interactive {
+                    // Config Drawer Toggle [⚙] (Interactive mode or Standby)
+                    if is_interactive || !is_game_running {
                         let cfg_color = if self.config_menu_open {
                             Color32::from_rgb(245, 158, 11)
                         } else {
@@ -430,75 +467,78 @@ impl eframe::App for DeadlockApp {
                         }
                     }
 
-                    // Mute Toggle (Text: Vol / Mute, no broken emojis)
-                    let is_muted = self.audio.is_muted();
-                    let mute_label = if is_muted { "Mute" } else { "Vol" };
-                    let mute_color = if is_muted {
-                        Color32::from_rgb(239, 68, 68)
-                    } else {
-                        Color32::from_rgb(148, 163, 184)
-                    };
+                    // In-Game Only Controls: Mute & Reset
+                    if is_game_running {
+                        // Mute Toggle (Text: Vol / Mute)
+                        let is_muted = self.audio.is_muted();
+                        let mute_label = if is_muted { "Mute" } else { "Vol" };
+                        let mute_color = if is_muted {
+                            Color32::from_rgb(239, 68, 68)
+                        } else {
+                            Color32::from_rgb(148, 163, 184)
+                        };
 
-                    if is_interactive {
-                        let mute_btn = ui.add(
-                            egui::Button::new(
-                                RichText::new(mute_label).size(10.5).color(mute_color),
-                            )
-                            .frame(false),
-                        );
-                        if mute_btn.clicked() {
-                            let new_muted = self.audio.toggle_mute();
-                            self.config.is_muted = new_muted;
-                            let _ = self.config.save_to_file(&self.config_path);
+                        if is_interactive {
+                            let mute_btn = ui.add(
+                                egui::Button::new(
+                                    RichText::new(mute_label).size(10.5).color(mute_color),
+                                )
+                                .frame(false),
+                            );
+                            if mute_btn.clicked() {
+                                let new_muted = self.audio.toggle_mute();
+                                self.config.is_muted = new_muted;
+                                let _ = self.config.save_to_file(&self.config_path);
+                            }
+                            if mute_btn.hovered() {
+                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                            }
+                        } else if is_muted {
+                            ui.label(
+                                RichText::new("Mute")
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(239, 68, 68)),
+                            );
                         }
-                        if mute_btn.hovered() {
-                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                        }
-                    } else if is_muted {
-                        ui.label(
-                            RichText::new("Mute")
-                                .size(10.0)
-                                .color(Color32::from_rgb(239, 68, 68)),
-                        );
-                    }
 
-                    // Reset Match Button [↺]
-                    if is_interactive {
-                        let reset_btn = ui.add(
-                            egui::Button::new(
-                                RichText::new("↺")
-                                    .size(12.0)
-                                    .color(Color32::from_rgb(148, 163, 184)),
-                            )
-                            .frame(false),
-                        );
-                        if reset_btn.clicked() {
-                            self.reset_match();
-                        }
-                        if reset_btn.hovered() {
-                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        // Reset Match Button [↺]
+                        if is_interactive {
+                            let reset_btn = ui.add(
+                                egui::Button::new(
+                                    RichText::new("↺")
+                                        .size(12.0)
+                                        .color(Color32::from_rgb(148, 163, 184)),
+                                )
+                                .frame(false),
+                            );
+                            if reset_btn.clicked() {
+                                self.reset_match();
+                            }
+                            if reset_btn.hovered() {
+                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                            }
                         }
                     }
                 });
             });
 
-            // 3. MAIN BODY: Config Drawer OR Vertical Option A Layout
-            if self.config_menu_open && is_interactive {
-                ui.add_space(4.0);
+            // 3. MAIN BODY: Config Drawer OR Tactical Noir Pro Layout
+            if self.config_menu_open && (is_interactive || !is_game_running) {
+                ui.add_space(3.0);
                 ui.separator();
                 ui.label(
-                    RichText::new("Configuración de Teclas")
+                    RichText::new("Configuración")
                         .strong()
                         .size(11.0)
                         .color(Color32::from_rgb(245, 158, 11)),
                 );
-                ui.add_space(3.0);
+                ui.add_space(2.0);
 
                 // Rebind Box Timer
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Ruta Cajas:")
-                            .size(10.5)
+                            .size(10.0)
                             .color(Color32::from_rgb(203, 213, 225)),
                     );
                     let btn_text = if self.rebinding == Some(RebindTarget::BoxTimer) {
@@ -506,7 +546,7 @@ impl eframe::App for DeadlockApp {
                     } else {
                         key_to_display_name(self.config.key_box_timer)
                     };
-                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(10.0)));
+                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(9.5)));
                     if btn.clicked() {
                         self.rebinding = Some(RebindTarget::BoxTimer);
                     }
@@ -516,7 +556,7 @@ impl eframe::App for DeadlockApp {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Mid Boss:")
-                            .size(10.5)
+                            .size(10.0)
                             .color(Color32::from_rgb(203, 213, 225)),
                     );
                     let btn_text = if self.rebinding == Some(RebindTarget::MidBoss) {
@@ -524,7 +564,7 @@ impl eframe::App for DeadlockApp {
                     } else {
                         key_to_display_name(self.config.key_midboss)
                     };
-                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(10.0)));
+                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(9.5)));
                     if btn.clicked() {
                         self.rebinding = Some(RebindTarget::MidBoss);
                     }
@@ -534,7 +574,7 @@ impl eframe::App for DeadlockApp {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Modo Calibrar:")
-                            .size(10.5)
+                            .size(10.0)
                             .color(Color32::from_rgb(203, 213, 225)),
                     );
                     let btn_text = if self.rebinding == Some(RebindTarget::Interactive) {
@@ -542,62 +582,177 @@ impl eframe::App for DeadlockApp {
                     } else {
                         key_to_display_name(self.config.key_interactive)
                     };
-                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(10.0)));
+                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(9.5)));
                     if btn.clicked() {
                         self.rebinding = Some(RebindTarget::Interactive);
                     }
                 });
 
-                ui.add_space(3.0);
+                ui.add_space(2.0);
+
+                // 30s Audio Alert Toggle
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Aviso 30s:")
+                            .size(10.0)
+                            .color(Color32::from_rgb(203, 213, 225)),
+                    );
+                    if ui.selectable_label(self.config.alert_30s_sound, "On").clicked() {
+                        self.config.alert_30s_sound = true;
+                        let _ = self.config.save_to_file(&self.config_path);
+                    }
+                    if ui.selectable_label(!self.config.alert_30s_sound, "Off").clicked() {
+                        self.config.alert_30s_sound = false;
+                        let _ = self.config.save_to_file(&self.config_path);
+                    }
+                });
+
+                // HUD Scale Selector
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Escala:")
+                            .size(10.0)
+                            .color(Color32::from_rgb(203, 213, 225)),
+                    );
+                    for (scale_val, label) in &[(1.0_f32, "100%"), (1.15_f32, "115%"), (1.30_f32, "130%")] {
+                        let selected = (self.config.hud_scale - scale_val).abs() < 0.01;
+                        if ui.selectable_label(selected, *label).clicked() {
+                            self.config.hud_scale = *scale_val;
+                            self.current_window_size = None;
+                            let _ = self.config.save_to_file(&self.config_path);
+                        }
+                    }
+                });
+
+                // Background Opacity Selector
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Opacidad:")
+                            .size(10.0)
+                            .color(Color32::from_rgb(203, 213, 225)),
+                    );
+                    for (op_val, label) in &[(0.92_f32, "Alta"), (0.75_f32, "Media"), (0.50_f32, "Baja")] {
+                        let selected = (self.config.bg_opacity - op_val).abs() < 0.01;
+                        if ui.selectable_label(selected, *label).clicked() {
+                            self.config.bg_opacity = *op_val;
+                            let _ = self.config.save_to_file(&self.config_path);
+                        }
+                    }
+                });
+
+                ui.add_space(2.0);
                 ui.label(
                     RichText::new("(Esc para cancelar rebind)")
-                        .size(9.0)
+                        .size(8.5)
                         .color(Color32::from_rgb(148, 163, 184)),
                 );
             } else {
                 ui.add_space(2.0);
 
                 if !is_game_running {
-                    ui.label(
-                        RichText::new("Esperando a Deadlock...")
-                            .color(Color32::from_rgb(148, 163, 184))
-                            .size(11.0),
-                    );
+                    // Centered Standby View
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new("●")
+                                .size(8.0)
+                                .color(Color32::from_rgb(245, 158, 11)),
+                        );
+                        ui.add_space(3.0);
+                        ui.label(
+                            RichText::new("En espera de Deadlock...")
+                                .size(11.0)
+                                .color(Color32::from_rgb(148, 163, 184)),
+                        );
+                    });
                 } else {
-                    // Option A: Vertical Grouped Milestone List
+                    // Tactical Noir Pro: Immediate Milestone Sub-card
                     if let Some(ref group) = immediate_group {
                         let header_color = match group.status {
                             EventStatus::Active => Color32::from_rgb(72, 239, 128),
                             EventStatus::Warning => Color32::from_rgb(251, 146, 60),
-                            _ => Color32::from_rgb(226, 232, 240),
+                            _ => Color32::from_rgb(245, 158, 11),
                         };
 
                         let target_str = format_time_mmss(group.target_time);
-                        let header_text = if group.status == EventStatus::Active {
-                            format!("{} (Activo)", target_str)
-                        } else {
-                            target_str
-                        };
 
-                        ui.label(
-                            RichText::new(header_text)
-                                .strong()
-                                .size(11.5)
-                                .color(header_color),
-                        );
+                        let card_bg = Color32::from_rgba_premultiplied(22, 27, 34, alpha);
+                        let card_stroke = Stroke::new(1.0_f32, Color32::from_rgb(37, 45, 61));
+                        let card_frame = egui::Frame::none()
+                            .fill(card_bg)
+                            .stroke(card_stroke)
+                            .rounding(Rounding::same(4.0))
+                            .inner_margin(Margin::symmetric(7.0, 5.0));
 
-                        // Bulleted list of simultaneous events
-                        for event in &group.events {
+                        card_frame.show(ui, |ui| {
+                            // Sub-card Header: Accent bar + Timestamp + Pill Badge
                             ui.horizontal(|ui| {
-                                ui.add_space(4.0);
-                                ui.label(RichText::new("•").size(10.5).color(header_color));
-                                ui.label(
-                                    RichText::new(event.kind.display_name())
-                                        .size(10.5)
-                                        .color(Color32::from_rgb(226, 232, 240)),
+                                let (bar_r, _) = ui.allocate_exact_size(Vec2::new(3.0, 14.0), egui::Sense::hover());
+                                ui.painter().rect_filled(
+                                    bar_r,
+                                    Rounding::same(1.5),
+                                    header_color,
                                 );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(target_str)
+                                        .strong()
+                                        .size(12.0)
+                                        .color(header_color),
+                                );
+
+                                // Right-aligned pill badge
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if group.status == EventStatus::Active {
+                                        let badge_bg = Color32::from_rgba_premultiplied(16, 50, 30, 220);
+                                        let badge_stroke = Stroke::new(1.0_f32, Color32::from_rgb(72, 239, 128));
+                                        egui::Frame::none()
+                                            .fill(badge_bg)
+                                            .stroke(badge_stroke)
+                                            .rounding(Rounding::same(3.0))
+                                            .inner_margin(Margin::symmetric(4.0, 1.0))
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    RichText::new("● ACTIVO")
+                                                        .size(8.5)
+                                                        .strong()
+                                                        .color(Color32::from_rgb(72, 239, 128)),
+                                                );
+                                            });
+                                    } else if group.status == EventStatus::Warning {
+                                        let badge_bg = Color32::from_rgba_premultiplied(60, 30, 10, 220);
+                                        let badge_stroke = Stroke::new(1.0_f32, Color32::from_rgb(251, 146, 60));
+                                        egui::Frame::none()
+                                            .fill(badge_bg)
+                                            .stroke(badge_stroke)
+                                            .rounding(Rounding::same(3.0))
+                                            .inner_margin(Margin::symmetric(4.0, 1.0))
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    RichText::new("PRONTO")
+                                                        .size(8.5)
+                                                        .strong()
+                                                        .color(Color32::from_rgb(251, 146, 60)),
+                                                );
+                                            });
+                                    }
+                                });
                             });
-                        }
+
+                            // Bulleted list of simultaneous events inside the card
+                            for event in &group.events {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    ui.label(RichText::new("•").size(10.0).color(header_color));
+                                    ui.label(
+                                        RichText::new(event.kind.display_name())
+                                            .size(10.0)
+                                            .color(Color32::from_rgb(226, 232, 240)),
+                                    );
+                                });
+                            }
+                        });
                     } else {
                         ui.label(
                             RichText::new("Sin eventos pendientes")
@@ -614,15 +769,23 @@ impl eframe::App for DeadlockApp {
                             next.events.iter().map(|e| e.kind.display_name()).collect();
                         let names_str = names.join(" · ");
 
-                        ui.label(
-                            RichText::new(format!("Siguiente: {}", nxt_target_str))
-                                .size(9.5)
-                                .color(Color32::from_rgb(148, 163, 184)),
-                        );
                         ui.horizontal(|ui| {
-                            ui.add_space(4.0);
+                            egui::Frame::none()
+                                .fill(Color32::from_rgb(30, 37, 48))
+                                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(45, 55, 72)))
+                                .rounding(Rounding::same(3.0))
+                                .inner_margin(Margin::symmetric(4.0, 1.0))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(format!("SIG {}", nxt_target_str))
+                                            .size(8.5)
+                                            .strong()
+                                            .color(Color32::from_rgb(148, 163, 184)),
+                                    );
+                                });
+                            ui.add_space(3.0);
                             ui.label(
-                                RichText::new(format!("• {}", names_str))
+                                RichText::new(names_str)
                                     .size(9.5)
                                     .color(Color32::from_rgb(148, 163, 184)),
                             );
@@ -630,7 +793,7 @@ impl eframe::App for DeadlockApp {
                     }
 
                     // Divider before fixed bottom farm trackers
-                    ui.add_space(3.0);
+                    ui.add_space(2.0);
                     ui.separator();
                     ui.add_space(1.0);
 
@@ -639,33 +802,51 @@ impl eframe::App for DeadlockApp {
                     let box_rem = self.scheduler.boxes.get_remaining(current_time);
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(format!("Ruta Cajas [{}]:", box_key_name))
+                            RichText::new("Ruta Cajas")
                                 .size(10.0)
                                 .color(Color32::from_rgb(203, 213, 225)),
                         );
-                        if let Some(rem) = box_rem {
-                            if rem == 0 {
+                        // Keycap [F8]
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(30, 37, 48))
+                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(55, 65, 81)))
+                            .rounding(Rounding::same(3.0))
+                            .inner_margin(Margin::symmetric(4.0, 1.0))
+                            .show(ui, |ui| {
                                 ui.label(
-                                    RichText::new("Listo")
-                                        .strong()
-                                        .size(10.0)
-                                        .color(Color32::from_rgb(72, 239, 128)),
+                                    RichText::new(box_key_name)
+                                        .size(8.5)
+                                        .monospace()
+                                        .color(Color32::from_rgb(226, 232, 240)),
                                 );
+                            });
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(rem) = box_rem {
+                                if rem == 0 {
+                                    ui.label(
+                                        RichText::new("LISTO")
+                                            .strong()
+                                            .size(10.0)
+                                            .color(Color32::from_rgb(72, 239, 128)),
+                                    );
+                                } else {
+                                    ui.label(
+                                        RichText::new(format!("{:02}:{:02}", rem / 60, rem % 60))
+                                            .strong()
+                                            .monospace()
+                                            .size(10.0)
+                                            .color(Color32::from_rgb(245, 158, 11)),
+                                    );
+                                }
                             } else {
                                 ui.label(
-                                    RichText::new(format!("{:02}:{:02}", rem / 60, rem % 60))
-                                        .strong()
+                                    RichText::new("LISTO")
                                         .size(10.0)
-                                        .color(Color32::from_rgb(245, 158, 11)),
+                                        .color(Color32::from_rgb(100, 116, 139)),
                                 );
                             }
-                        } else {
-                            ui.label(
-                                RichText::new("Listo")
-                                    .size(10.0)
-                                    .color(Color32::from_rgb(100, 116, 139)),
-                            );
-                        }
+                        });
                     });
 
                     // Fixed Bottom Tracker 2: Mid Boss Tracker
@@ -673,41 +854,59 @@ impl eframe::App for DeadlockApp {
                     let boss_respawn = self.scheduler.midboss.get_active_respawn(current_time);
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(format!("Mid Boss [{}]:", boss_key_name))
+                            RichText::new("Mid Boss")
                                 .size(10.0)
                                 .color(Color32::from_rgb(203, 213, 225)),
                         );
-                        if let Some(respawn) = boss_respawn {
-                            let rem = respawn.saturating_sub(current_time);
-                            if rem == 0 {
+                        // Keycap [F9]
+                        egui::Frame::none()
+                            .fill(Color32::from_rgb(30, 37, 48))
+                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(55, 65, 81)))
+                            .rounding(Rounding::same(3.0))
+                            .inner_margin(Margin::symmetric(4.0, 1.0))
+                            .show(ui, |ui| {
                                 ui.label(
-                                    RichText::new("Listo")
-                                        .strong()
-                                        .size(10.0)
-                                        .color(Color32::from_rgb(72, 239, 128)),
+                                    RichText::new(boss_key_name)
+                                        .size(8.5)
+                                        .monospace()
+                                        .color(Color32::from_rgb(226, 232, 240)),
                                 );
+                            });
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(respawn) = boss_respawn {
+                                let rem = respawn.saturating_sub(current_time);
+                                if rem == 0 {
+                                    ui.label(
+                                        RichText::new("LISTO")
+                                            .strong()
+                                            .size(10.0)
+                                            .color(Color32::from_rgb(72, 239, 128)),
+                                    );
+                                } else {
+                                    ui.label(
+                                        RichText::new(format!("{:02}:{:02}", rem / 60, rem % 60))
+                                            .strong()
+                                            .monospace()
+                                            .size(10.0)
+                                            .color(Color32::from_rgb(251, 146, 60)),
+                                    );
+                                }
                             } else {
                                 ui.label(
-                                    RichText::new(format!("{:02}:{:02}", rem / 60, rem % 60))
-                                        .strong()
+                                    RichText::new("LISTO")
                                         .size(10.0)
-                                        .color(Color32::from_rgb(251, 146, 60)),
+                                        .color(Color32::from_rgb(100, 116, 139)),
                                 );
                             }
-                        } else {
-                            ui.label(
-                                RichText::new("Listo")
-                                    .size(10.0)
-                                    .color(Color32::from_rgb(100, 116, 139)),
-                            );
-                        }
+                        });
                     });
                 }
             }
         });
 
         // Fast repaint in calibration/config mode; low CPU (200ms) in ghost mode
-        if is_interactive {
+        if is_interactive || self.config_menu_open {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else {
             ctx.request_repaint_after(Duration::from_millis(200));
