@@ -6,6 +6,41 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use windows::core::w;
+use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, GetCursorPos, GetWindowRect, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
+};
+
+/// Triggers smooth, zero-latency native Windows window dragging via DWM using actual cursor coordinates.
+pub fn start_native_window_drag() -> Option<(i32, i32)> {
+    unsafe {
+        let hwnd = FindWindowW(None, w!("DeadlockMacroOverlay")).ok()?;
+        if hwnd.0.is_null() {
+            return None;
+        }
+
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let lparam = ((pt.y as isize) << 16) | ((pt.x as isize) & 0xFFFF);
+
+        let _ = ReleaseCapture();
+        SendMessageW(
+            hwnd,
+            WM_NCLBUTTONDOWN,
+            WPARAM(HTCAPTION as usize),
+            LPARAM(lparam),
+        );
+
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_ok() {
+            Some((rect.left, rect.top))
+        } else {
+            None
+        }
+    }
+}
 
 pub struct DeadlockApp {
     pub config: OverlayConfig,
@@ -95,6 +130,9 @@ impl DeadlockApp {
 
 impl eframe::App for DeadlockApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Disable text selection globally so dragging is never hijacked by text selection
+        ctx.style_mut(|s| s.interaction.selectable_labels = false);
+
         self.update_timing();
 
         let current_time = self.clock.current_seconds();
@@ -106,9 +144,9 @@ impl eframe::App for DeadlockApp {
 
         // Adjust window size dynamically: ultra-compact HUD
         if is_interactive {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(260.0, 90.0)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(260.0, 92.0)));
         } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(250.0, 64.0)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(250.0, 68.0)));
         }
 
         // Visual frame styling
@@ -116,42 +154,52 @@ impl eframe::App for DeadlockApp {
             egui::Frame::none()
                 .fill(Color32::from_rgba_premultiplied(16, 20, 26, 240))
                 .stroke(Stroke::new(1.5_f32, Color32::from_rgb(0, 210, 255))) // Cyan border indicating calibration
-                .inner_margin(Margin::symmetric(10.0, 8.0))
+                .inner_margin(Margin::symmetric(10.0, 7.0))
                 .rounding(Rounding::same(8.0))
         } else {
             egui::Frame::none()
                 .fill(Color32::from_rgba_premultiplied(10, 12, 16, 195))
                 .stroke(Stroke::NONE)
-                .inner_margin(Margin::symmetric(10.0, 8.0))
+                .inner_margin(Margin::symmetric(10.0, 7.0))
                 .rounding(Rounding::same(6.0))
         };
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            // Drag support anywhere on the overlay in interactive mode
             if is_interactive {
-                let drag_rect = ui.max_rect();
-                let drag_response = ui.interact(drag_rect, ui.id().with("overlay_drag_area"), egui::Sense::drag());
-                if drag_response.dragged() {
-                    let delta = drag_response.drag_delta();
-                    self.config.win_x += delta.x as i32;
-                    self.config.win_y += delta.y as i32;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-                        self.config.win_x as f32,
-                        self.config.win_y as f32,
-                    )));
-                }
-                if drag_response.drag_stopped() {
-                    let _ = self.config.save_to_file(&self.config_path);
-                }
-
-                // Interactive top hint bar
+                // Dedicated, 100% reliable drag handle bar ("Zona fija")
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("✥ Arrastrar para mover | [F10] Fijar")
-                            .color(Color32::from_rgb(0, 210, 255))
-                            .small()
-                            .strong(),
+                    let handle_width = (ui.available_width() - 52.0).max(60.0);
+                    let (handle_rect, handle_response) = ui.allocate_exact_size(
+                        Vec2::new(handle_width, 18.0),
+                        egui::Sense::click_and_drag(),
                     );
+
+                    let is_hovered = handle_response.hovered();
+                    let bg_color = if is_hovered {
+                        Color32::from_rgba_premultiplied(0, 170, 235, 100)
+                    } else {
+                        Color32::from_rgba_premultiplied(32, 44, 62, 160)
+                    };
+
+                    ui.painter().rect_filled(handle_rect, Rounding::same(4.0), bg_color);
+                    ui.painter().rect_stroke(handle_rect, Rounding::same(4.0), Stroke::new(1.0_f32, Color32::from_rgb(0, 190, 255)));
+
+                    ui.painter().text(
+                        handle_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "⠿ ARRASTRAR AQUÍ ⠿",
+                        egui::FontId::proportional(11.0),
+                        Color32::WHITE,
+                    );
+
+                    if handle_response.is_pointer_button_down_on() || handle_response.drag_started() {
+                        if let Some((new_x, new_y)) = start_native_window_drag() {
+                            self.config.win_x = new_x;
+                            self.config.win_y = new_y;
+                            let _ = self.config.save_to_file(&self.config_path);
+                        }
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("Reset").clicked() {
                             self.config = OverlayConfig::default_for_resolution(1920, 1080);
@@ -180,7 +228,7 @@ impl eframe::App for DeadlockApp {
                         egui::RichText::new(banner_text)
                             .color(Color32::from_rgb(72, 239, 128)) // Lime green
                             .strong()
-                            .size(14.0),
+                            .size(13.5),
                     );
                 });
             } else if let Some(first_event) = immediate_events.first() {
@@ -195,7 +243,7 @@ impl eframe::App for DeadlockApp {
                             egui::RichText::new(format!("¡ROTACIÓN! {} en {}s", label_names, remaining))
                                 .color(Color32::from_rgb(251, 146, 60)) // Orange warning
                                 .strong()
-                                .size(13.5),
+                                .size(13.0),
                         );
                     } else {
                         let rem_min = remaining / 60;
@@ -205,7 +253,7 @@ impl eframe::App for DeadlockApp {
                             egui::RichText::new(format!("{} [{}] en {:02}:{:02}", label_names, target_str, rem_min, rem_sec))
                                 .color(Color32::WHITE)
                                 .strong()
-                                .size(13.0),
+                                .size(12.5),
                         );
                     }
                 });
@@ -215,9 +263,29 @@ impl eframe::App for DeadlockApp {
                 });
             }
 
-            ui.add_space(3.0);
+            // 2. BARRA DE PROGRESO VISUAL DINÁMICA
+            if let Some(first_event) = immediate_events.first() {
+                let progress = first_event.progress(current_time);
+                let status = first_event.status(current_time);
+                let bar_color = if status == EventStatus::Active {
+                    Color32::from_rgb(72, 239, 128) // Lime green
+                } else if status == EventStatus::Warning {
+                    Color32::from_rgb(251, 146, 60) // Orange
+                } else {
+                    Color32::from_rgb(0, 190, 255) // Cyan
+                };
 
-            // 2. BARRA DE ESTADO INFERIOR
+                ui.add_space(2.0);
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.5), egui::Sense::hover());
+                ui.painter().rect_filled(rect, Rounding::same(1.25), Color32::from_rgba_premultiplied(45, 55, 70, 140));
+                let filled_width = (rect.width() * progress).clamp(0.0, rect.width());
+                let filled_rect = egui::Rect::from_min_size(rect.min, Vec2::new(filled_width, rect.height()));
+                ui.painter().rect_filled(filled_rect, Rounding::same(1.25), bar_color);
+            }
+
+            ui.add_space(2.0);
+
+            // 3. BARRA DE ESTADO INFERIOR
             ui.horizontal(|ui| {
                 let clock_display = if self.clock.is_active() {
                     format!("Reloj: {} [Auto]", format_time_mmss(current_time))
@@ -237,7 +305,11 @@ impl eframe::App for DeadlockApp {
             });
         });
 
-        // Request repaint every 200ms
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        // Fast responsive repaint in calibration mode; low CPU (200ms) in ghost mode
+        if is_interactive {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
     }
 }

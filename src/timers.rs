@@ -56,6 +56,30 @@ impl MacroEvent {
             }
         }
     }
+
+    /// Approximate total duration span of this milestone for proportional progress display.
+    pub fn interval_span(&self) -> u32 {
+        match self.kind {
+            EventKind::T1Camps => 120,
+            EventKind::BridgeBuffs => 300,
+            EventKind::T2Camps => 120,
+            EventKind::SinnersSacrifice => 60,
+            EventKind::SoulUrn => 300,
+            EventKind::MidBossSpawn => 120,
+            EventKind::MidBossRespawn => 300,
+        }
+    }
+
+    /// Computes progress normalized between 0.0 and 1.0 leading up to the target spawn.
+    pub fn progress(&self, current_seconds: u32) -> f32 {
+        if current_seconds >= self.target_time {
+            return 1.0;
+        }
+        let span = self.interval_span() as f32;
+        let rem = self.remaining_seconds(current_seconds) as f32;
+        let elapsed = span - rem;
+        (elapsed / span).clamp(0.0, 1.0)
+    }
 }
 
 /// Tracks manual kills and dynamic respawn countdowns for the Mid Boss objective.

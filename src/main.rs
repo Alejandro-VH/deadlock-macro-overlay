@@ -13,9 +13,9 @@ use std::time::Duration;
 use windows::core::w;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetSystemMetrics, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
-    SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
+    SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
 const WINDOW_TITLE: &str = "DeadlockMacroOverlay";
@@ -33,16 +33,45 @@ fn apply_click_through(hwnd: HWND, click_through: bool) {
         } else {
             (current_style & !(WS_EX_TRANSPARENT.0 as isize)) | (WS_EX_LAYERED.0 as isize)
         };
-        let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
-        let _ = SetWindowPos(
-            hwnd,
-            HWND(std::ptr::null_mut()),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
-        );
+        if current_style != new_style {
+            let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND(std::ptr::null_mut()),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            );
+        }
+    }
+}
+
+/// Checks if Deadlock game is the active foreground window, explicitly excluding our overlay.
+fn is_deadlock_game_foreground(overlay_hwnd: HWND) -> bool {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() || (!overlay_hwnd.0.is_null() && hwnd == overlay_hwnd) {
+            return false;
+        }
+        let mut title = [0u16; 128];
+        let len = GetWindowTextW(hwnd, &mut title);
+        if len > 0 {
+            let title_str = String::from_utf16_lossy(&title[..len as usize]);
+            // Exclude our overlay window title
+            if title_str.contains(WINDOW_TITLE) {
+                return false;
+            }
+            // Match the actual Deadlock game window
+            if title_str == "Deadlock"
+                || title_str.starts_with("Deadlock ")
+                || title_str.contains("project8")
+            {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -56,6 +85,7 @@ fn main() -> eframe::Result<()> {
 
     let config = OverlayConfig::load_from_file(CONFIG_FILE, screen_w, screen_h);
     let interactive_flag = Arc::new(AtomicBool::new(false)); // Start in ghost (click-through) mode
+    let manual_override_flag = Arc::new(AtomicBool::new(false));
     let roi_config = Arc::new(std::sync::RwLock::new(config.clone()));
 
     // 2. Setup channels
@@ -76,11 +106,12 @@ fn main() -> eframe::Result<()> {
         let _ = manager.register(hk_shift_f9);
     }
 
-    // 4. Background Hotkey listener & Click-Through manager thread
+    // 4. Background Hotkey listener & Automatic Focus / Click-Through manager thread
     let flag_clone = Arc::clone(&interactive_flag);
+    let manual_clone = Arc::clone(&manual_override_flag);
     let cmd_tx_clone = app_cmd_tx.clone();
     thread::Builder::new()
-        .name("hotkey_dispatcher".into())
+        .name("hotkey_and_focus_manager".into())
         .spawn(move || {
             let hotkey_channel = GlobalHotKeyEvent::receiver();
             let mut cached_hwnd = HWND(std::ptr::null_mut());
@@ -92,18 +123,16 @@ fn main() -> eframe::Result<()> {
                         cached_hwnd = FindWindowW(None, w!("DeadlockMacroOverlay"))
                             .unwrap_or(HWND(std::ptr::null_mut()));
                         if !cached_hwnd.0.is_null() {
-                            // Initial state: ghost mode (click-through enabled)
                             apply_click_through(cached_hwnd, true);
                         }
                     }
                 }
 
+                // Process hotkeys
                 if let Ok(event) = hotkey_channel.try_recv() {
                     if event.id == hk_f10.id() {
-                        let new_state = !flag_clone.load(Ordering::Relaxed);
-                        flag_clone.store(new_state, Ordering::Relaxed);
-                        // Invert: interactive means click_through = false
-                        apply_click_through(cached_hwnd, !new_state);
+                        let current_override = manual_clone.load(Ordering::Relaxed);
+                        manual_clone.store(!current_override, Ordering::Relaxed);
                     } else if event.id == hk_shift_f10.id() {
                         let _ = cmd_tx_clone.send(AppCommand::ResetMatch);
                     } else if event.id == hk_f9.id() {
@@ -113,10 +142,21 @@ fn main() -> eframe::Result<()> {
                     }
                 }
 
-                thread::sleep(Duration::from_millis(50));
+                // Stable focus check:
+                // Only Deadlock game forces ghost mode. Clicking on our overlay never flips it off!
+                let in_deadlock = is_deadlock_game_foreground(cached_hwnd);
+                let manual_force = manual_clone.load(Ordering::Relaxed);
+                let is_interactive = manual_force || !in_deadlock;
+
+                flag_clone.store(is_interactive, Ordering::Relaxed);
+                if !cached_hwnd.0.is_null() {
+                    apply_click_through(cached_hwnd, !is_interactive);
+                }
+
+                thread::sleep(Duration::from_millis(60));
             }
         })
-        .expect("Failed to spawn hotkey thread");
+        .expect("Failed to spawn focus manager thread");
 
     // 5. Background Screen Reader OCR thread (1 Hz)
     let roi_clone = Arc::clone(&roi_config);
@@ -150,7 +190,7 @@ fn main() -> eframe::Result<()> {
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
-            .with_inner_size([250.0, 64.0])
+            .with_inner_size([250.0, 68.0])
             .with_position([config.win_x as f32, config.win_y as f32]),
         ..Default::default()
     };

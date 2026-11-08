@@ -1,6 +1,30 @@
 use deadlock_overlay::timers::{
-    ClockFilter, EventKind, EventStatus, MacroScheduler, MidBossTracker,
+    ClockFilter, EventKind, EventStatus, MacroEvent, MacroScheduler, MidBossTracker,
 };
+
+#[test]
+fn test_event_progress_calculation() {
+    // 1. T1Camps (target: 120s, span: 120s)
+    let t1_event = MacroEvent {
+        kind: EventKind::T1Camps,
+        target_time: 120,
+    };
+    assert_eq!(t1_event.progress(0), 0.0);
+    assert_eq!(t1_event.progress(60), 0.5);
+    assert_eq!(t1_event.progress(120), 1.0);
+
+    // 2. BridgeBuffs (target: 300s, span: 300s)
+    let bridge_event = MacroEvent {
+        kind: EventKind::BridgeBuffs,
+        target_time: 300,
+    };
+    assert_eq!(bridge_event.progress(0), 0.0);
+    assert_eq!(bridge_event.progress(150), 0.5);
+    assert_eq!(bridge_event.progress(300), 1.0);
+
+    // 3. Warning boundary (at 270s, progress is 0.9 / 90%)
+    assert!((bridge_event.progress(270) - 0.9).abs() < 0.01);
+}
 
 #[test]
 fn test_macro_milestones_progression() {
