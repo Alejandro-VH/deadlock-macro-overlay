@@ -257,3 +257,26 @@ fn test_tracker_handles_file_truncation() {
 
     let _ = std::fs::remove_file(log_file);
 }
+
+
+#[test]
+fn test_poll_log_events_disconnect_then_spawn_preserves_new_hero() {
+    let dir = std::env::temp_dir().join("deadlock_test_log_order");
+    let _ = std::fs::create_dir_all(&dir);
+    let log_file = dir.join("console.log");
+
+    {
+        let mut f = File::create(&log_file).unwrap();
+        writeln!(f, "Disconnecting from server: user left match").unwrap();
+        writeln!(f, "Attempting to spawn hero hero_tengu (4). GameState is 7").unwrap();
+    }
+
+    let mut tracker = HeroTracker::new(Some(log_file.clone()));
+    let (detected, match_ended) = tracker.poll_log_events();
+
+    assert_eq!(detected, Some("Ivy".to_string()));
+    assert_eq!(tracker.get_hero().display_name, "Ivy");
+    assert!(!match_ended, "Hero spawn after disconnect must cancel match_ended flag");
+
+    let _ = std::fs::remove_file(log_file);
+}

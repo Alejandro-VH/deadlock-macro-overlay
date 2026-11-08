@@ -4,7 +4,7 @@ use deadlock_overlay::app::DeadlockApp;
 use deadlock_overlay::config::OverlayConfig;
 use deadlock_overlay::screen_reader::{capture_screen_roi, ScreenOcr};
 use global_hotkey::hotkey::{Code, HotKey};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
@@ -156,15 +156,17 @@ fn main() -> eframe::Result<()> {
                     }
                 }
 
-                // Process single-key direct hotkeys (No Shift combinations)
-                if let Ok(event) = hotkey_channel.try_recv() {
-                    if event.id == hk_f8.id() {
-                        let _ = cmd_tx_clone.send(AppCommand::ToggleBoxTimer);
-                    } else if event.id == hk_f9.id() {
-                        let _ = cmd_tx_clone.send(AppCommand::ToggleMidBoss);
-                    } else if event.id == hk_f10.id() {
-                        let current_override = manual_clone.load(Ordering::Relaxed);
-                        manual_clone.store(!current_override, Ordering::Relaxed);
+                // Process single-key direct hotkeys (Only on keydown / Pressed event, draining channel)
+                while let Ok(event) = hotkey_channel.try_recv() {
+                    if event.state == HotKeyState::Pressed {
+                        if event.id == hk_f8.id() {
+                            let _ = cmd_tx_clone.send(AppCommand::ToggleBoxTimer);
+                        } else if event.id == hk_f9.id() {
+                            let _ = cmd_tx_clone.send(AppCommand::ToggleMidBoss);
+                        } else if event.id == hk_f10.id() {
+                            let current_override = manual_clone.load(Ordering::Relaxed);
+                            manual_clone.store(!current_override, Ordering::Relaxed);
+                        }
                     }
                 }
 

@@ -200,6 +200,8 @@ impl HeroTracker {
 
             if is_match_end_line(&line) {
                 match_ended = true;
+                self.reset_hero_state();
+                latest_detected = None;
             }
 
             if let Some(hero_id) = parse_hero_from_log_line(&line) {
@@ -212,6 +214,7 @@ impl HeroTracker {
                     };
                 }
                 latest_detected = Some(display);
+                match_ended = false;
             }
             line.clear();
         }

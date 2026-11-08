@@ -611,7 +611,8 @@ impl eframe::App for DeadlockApp {
                         for counter in build.counters {
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(RichText::new(format!("• {}:", counter.threat)).size(9.0).color(Color32::from_rgb(248, 113, 113)));
-                                ui.label(RichText::new(counter.counter).size(9.0).strong().color(Color32::from_rgb(254, 240, 138)));
+                                ui.label(RichText::new(counter.counter).size(9.0).strong().color(Color32::from_rgb(254, 240, 138)))
+                                    .on_hover_text(counter.notes);
                             });
                         }
                     });
