@@ -11,6 +11,7 @@ pub struct OverlayConfig {
     pub roi_y: i32,
     pub roi_w: i32,
     pub roi_h: i32,
+    pub last_hero: String,
 }
 
 impl OverlayConfig {
@@ -24,6 +25,7 @@ impl OverlayConfig {
             roi_y: 8,
             roi_w: 120,
             roi_h: 42,
+            last_hero: String::new(),
         }
     }
 
@@ -36,6 +38,9 @@ impl OverlayConfig {
         writeln!(file, "roi_y={}", self.roi_y)?;
         writeln!(file, "roi_w={}", self.roi_w)?;
         writeln!(file, "roi_h={}", self.roi_h)?;
+        if !self.last_hero.is_empty() {
+            writeln!(file, "last_hero={}", self.last_hero)?;
+        }
         file.flush()
     }
 
@@ -86,6 +91,11 @@ impl OverlayConfig {
                     "roi_h" => {
                         if let Ok(v) = val.parse::<i32>() {
                             config.roi_h = v;
+                        }
+                    }
+                    "last_hero" => {
+                        if !val.is_empty() {
+                            config.last_hero = val.to_string();
                         }
                     }
                     _ => {}

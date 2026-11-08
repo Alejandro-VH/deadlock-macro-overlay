@@ -36,6 +36,21 @@ fn test_save_and_load_round_trip() {
 }
 
 #[test]
+fn test_save_and_load_hero_persistence() {
+    let mut test_path = std::env::temp_dir();
+    test_path.push("test_deadlock_config_hero.cfg");
+    let mut original = OverlayConfig::default_for_resolution(1920, 1080);
+    original.last_hero = "Vindicta".to_string();
+
+    original.save_to_file(&test_path).expect("Failed to save config");
+
+    let loaded = OverlayConfig::load_from_file(&test_path, 1920, 1080);
+    assert_eq!(loaded.last_hero, "Vindicta");
+
+    let _ = fs::remove_file(test_path);
+}
+
+#[test]
 fn test_load_fallback_on_missing_file() {
     let non_existent = "non_existent_config.cfg";
     let loaded = OverlayConfig::load_from_file(non_existent, 1920, 1080);
