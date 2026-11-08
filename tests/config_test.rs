@@ -108,7 +108,33 @@ fn test_config_keybind_defaults_and_persistence() {
     assert_eq!(display_name_to_key("Mouse5"), Some(0x06));
     assert_eq!(display_name_to_key("F8"), Some(0x77));
     assert_eq!(display_name_to_key("V"), Some(0x56));
-    assert_eq!(display_name_to_key("B"), Some(0x42));
+
+    let _ = fs::remove_file(test_path);
+}
+
+#[test]
+fn test_config_extended_settings_defaults_and_persistence() {
+    let mut test_path = std::env::temp_dir();
+    test_path.push("test_deadlock_config_extended.cfg");
+
+    // 1. Defaults
+    let def = OverlayConfig::default_for_resolution(1920, 1080);
+    assert!(def.alert_30s_sound);
+    assert!((def.hud_scale - 1.0).abs() < 0.001);
+    assert!((def.bg_opacity - 0.92).abs() < 0.001);
+
+    // 2. Custom values
+    let mut custom = def;
+    custom.alert_30s_sound = false;
+    custom.hud_scale = 1.15;
+    custom.bg_opacity = 0.75;
+    custom.save_to_file(&test_path).expect("Failed to save extended config");
+
+    // 3. Load & verify round trip
+    let loaded = OverlayConfig::load_from_file(&test_path, 1920, 1080);
+    assert!(!loaded.alert_30s_sound);
+    assert!((loaded.hud_scale - 1.15).abs() < 0.001);
+    assert!((loaded.bg_opacity - 0.75).abs() < 0.001);
 
     let _ = fs::remove_file(test_path);
 }

@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 /// Coordinates and dimensions for overlay positioning, OCR sampling, and preferences.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OverlayConfig {
     pub win_x: i32,
     pub win_y: i32,
@@ -13,6 +13,9 @@ pub struct OverlayConfig {
     pub roi_h: i32,
     pub last_hero: String,
     pub is_muted: bool,
+    pub alert_30s_sound: bool,
+    pub hud_scale: f32,
+    pub bg_opacity: f32,
     pub key_box_timer: u16,
     pub key_midboss: u16,
     pub key_interactive: u16,
@@ -31,6 +34,9 @@ impl OverlayConfig {
             roi_h: 42,
             last_hero: String::new(),
             is_muted: false,
+            alert_30s_sound: true,
+            hud_scale: 1.0,
+            bg_opacity: 0.92,
             key_box_timer: 0x77,   // VK_F8
             key_midboss: 0x78,     // VK_F9
             key_interactive: 0x79, // VK_F10
@@ -50,6 +56,9 @@ impl OverlayConfig {
             writeln!(file, "last_hero={}", self.last_hero)?;
         }
         writeln!(file, "is_muted={}", self.is_muted)?;
+        writeln!(file, "alert_30s_sound={}", self.alert_30s_sound)?;
+        writeln!(file, "hud_scale={:.2}", self.hud_scale)?;
+        writeln!(file, "bg_opacity={:.2}", self.bg_opacity)?;
         writeln!(file, "key_box_timer={}", key_to_display_name(self.key_box_timer))?;
         writeln!(file, "key_midboss={}", key_to_display_name(self.key_midboss))?;
         writeln!(file, "key_interactive={}", key_to_display_name(self.key_interactive))?;
@@ -113,6 +122,21 @@ impl OverlayConfig {
                     "is_muted" => {
                         if let Ok(v) = val.parse::<bool>() {
                             config.is_muted = v;
+                        }
+                    }
+                    "alert_30s_sound" => {
+                        if let Ok(v) = val.parse::<bool>() {
+                            config.alert_30s_sound = v;
+                        }
+                    }
+                    "hud_scale" => {
+                        if let Ok(v) = val.parse::<f32>() {
+                            config.hud_scale = v;
+                        }
+                    }
+                    "bg_opacity" => {
+                        if let Ok(v) = val.parse::<f32>() {
+                            config.bg_opacity = v;
                         }
                     }
                     "key_box_timer" => {
