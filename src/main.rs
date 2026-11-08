@@ -186,16 +186,21 @@ fn main() -> eframe::Result<()> {
                 }
 
                 // Window-scoped passive hotkey polling:
-                // Only process hotkeys when Deadlock is the active foreground window.
+                // Process game hotkeys when Deadlock is foreground, and allow calibration key (F10)
+                // when either Deadlock or the overlay itself is foreground.
                 // Prevents key hijacking in Discord, browser, or chat.
-                if in_deadlock {
+                let is_overlay_foreground = unsafe {
+                    !cached_hwnd.0.is_null() && GetForegroundWindow() == cached_hwnd
+                };
+
+                if in_deadlock || is_overlay_foreground {
                     let (key_box, key_boss, key_inter) = {
                         let cfg = config_clone.read().unwrap();
                         (cfg.key_box_timer, cfg.key_midboss, cfg.key_interactive)
                     };
 
-                    let is_box_down = unsafe { (GetAsyncKeyState(key_box as i32) as u16 & 0x8000) != 0 };
-                    let is_boss_down = unsafe { (GetAsyncKeyState(key_boss as i32) as u16 & 0x8000) != 0 };
+                    let is_box_down = in_deadlock && unsafe { (GetAsyncKeyState(key_box as i32) as u16 & 0x8000) != 0 };
+                    let is_boss_down = in_deadlock && unsafe { (GetAsyncKeyState(key_boss as i32) as u16 & 0x8000) != 0 };
                     let is_inter_down = unsafe { (GetAsyncKeyState(key_inter as i32) as u16 & 0x8000) != 0 };
 
                     if is_box_down && !prev_box_down {
@@ -213,7 +218,7 @@ fn main() -> eframe::Result<()> {
                     prev_boss_down = is_boss_down;
                     prev_interactive_down = is_inter_down;
                 } else {
-                    // Reset key states when Deadlock loses focus
+                    // Reset key states when neither Deadlock nor Overlay has focus
                     prev_box_down = false;
                     prev_boss_down = false;
                     prev_interactive_down = false;

@@ -56,8 +56,9 @@ pub fn poll_key_for_rebinding() -> Option<u16> {
                 return Some(vk as u16);
             }
         }
-        // Modifiers / special keys: CapsLock (0x14), Space (0x20), Alt (0x12), Ctrl (0x11), Shift (0x10), Tab (0x09)
-        for &vk in &[0x14, 0x20, 0x12, 0x11, 0x10, 0x09] {
+        // Modifiers / special keys: CapsLock (0x14), Space (0x20), Alt (0x12), Ctrl (0x11), Shift (0x10)
+        // Note: Tab (0x09) is excluded to prevent accidental assignment during in-game Tab passthrough
+        for &vk in &[0x14, 0x20, 0x12, 0x11, 0x10] {
             if (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 {
                 return Some(vk as u16);
             }
@@ -253,7 +254,7 @@ impl eframe::App for DeadlockApp {
             self.update_timing();
         } else {
             // Game not running: drain OCR messages and keep clock reset
-            while let Ok(_) = self.ocr_rx.try_recv() {}
+            while self.ocr_rx.try_recv().is_ok() {}
             self.clock.reset();
             self.triggered_alerts.clear();
             self.triggered_warnings.clear();
@@ -265,7 +266,7 @@ impl eframe::App for DeadlockApp {
         if is_game_running {
             let box_rem = self.scheduler.boxes.get_remaining(current_time);
             if let Some(rem) = box_rem {
-                if rem == 0 && self.last_box_rem.map_or(false, |r| r > 0) {
+                if rem == 0 && self.last_box_rem.is_some_and(|r| r > 0) {
                     self.audio.play_box_ready();
                 }
             }
@@ -277,7 +278,7 @@ impl eframe::App for DeadlockApp {
                 .get_active_respawn(current_time)
                 .map(|r| r.saturating_sub(current_time));
             if let Some(rem) = boss_rem {
-                if rem == 0 && self.last_boss_rem.map_or(false, |r| r > 0) {
+                if rem == 0 && self.last_boss_rem.is_some_and(|r| r > 0) {
                     self.audio.play_boss_ready();
                 }
             }
