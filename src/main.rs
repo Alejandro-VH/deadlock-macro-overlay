@@ -3,8 +3,6 @@
 use deadlock_overlay::app::DeadlockApp;
 use deadlock_overlay::config::OverlayConfig;
 use deadlock_overlay::screen_reader::{capture_screen_roi, ScreenOcr};
-use global_hotkey::hotkey::{Code, HotKey};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
@@ -146,27 +144,18 @@ fn main() -> eframe::Result<()> {
     let (ocr_tx, ocr_rx) = channel::<Option<u32>>();
     let (app_cmd_tx, app_cmd_rx) = channel::<AppCommand>();
 
-    // 3. Register Global Hotkeys: Single Direct Keys Only (No Shift combos)
-    let hotkey_manager = GlobalHotKeyManager::new().ok();
-    let hk_f8 = HotKey::new(None, Code::F8);
-    let hk_f9 = HotKey::new(None, Code::F9);
-    let hk_f10 = HotKey::new(None, Code::F10);
-
-    if let Some(ref manager) = hotkey_manager {
-        let _ = manager.register(hk_f8);
-        let _ = manager.register(hk_f9);
-        let _ = manager.register(hk_f10);
-    }
-
-    // 4. Background Hotkey listener & Automatic Focus / In-Game Tab Passthrough thread
+    // 3. Background Input & In-Game Tab Passthrough thread (Window-scoped passive polling)
     let flag_clone = Arc::clone(&interactive_flag);
     let manual_clone = Arc::clone(&manual_override_flag);
     let cmd_tx_clone = app_cmd_tx.clone();
+    let config_clone = Arc::clone(&roi_config);
     thread::Builder::new()
-        .name("hotkey_and_focus_manager".into())
+        .name("input_and_focus_manager".into())
         .spawn(move || {
-            let hotkey_channel = GlobalHotKeyEvent::receiver();
             let mut cached_hwnd = HWND(std::ptr::null_mut());
+            let mut prev_box_down = false;
+            let mut prev_boss_down = false;
+            let mut prev_interactive_down = false;
 
             loop {
                 // Poll for HWND if not yet found
@@ -177,20 +166,6 @@ fn main() -> eframe::Result<()> {
                         if !cached_hwnd.0.is_null() {
                             strip_snap_styles(cached_hwnd);
                             apply_click_through(cached_hwnd, true);
-                        }
-                    }
-                }
-
-                // Process single-key direct hotkeys (Only on keydown / Pressed event, draining channel)
-                while let Ok(event) = hotkey_channel.try_recv() {
-                    if event.state == HotKeyState::Pressed {
-                        if event.id == hk_f8.id() {
-                            let _ = cmd_tx_clone.send(AppCommand::ToggleBoxTimer);
-                        } else if event.id == hk_f9.id() {
-                            let _ = cmd_tx_clone.send(AppCommand::ToggleMidBoss);
-                        } else if event.id == hk_f10.id() {
-                            let current_override = manual_clone.load(Ordering::Relaxed);
-                            manual_clone.store(!current_override, Ordering::Relaxed);
                         }
                     }
                 }
@@ -210,7 +185,41 @@ fn main() -> eframe::Result<()> {
                     apply_click_through(cached_hwnd, !is_interactive);
                 }
 
-                thread::sleep(Duration::from_millis(50));
+                // Window-scoped passive hotkey polling:
+                // Only process hotkeys when Deadlock is the active foreground window.
+                // Prevents key hijacking in Discord, browser, or chat.
+                if in_deadlock {
+                    let (key_box, key_boss, key_inter) = {
+                        let cfg = config_clone.read().unwrap();
+                        (cfg.key_box_timer, cfg.key_midboss, cfg.key_interactive)
+                    };
+
+                    let is_box_down = unsafe { (GetAsyncKeyState(key_box as i32) as u16 & 0x8000) != 0 };
+                    let is_boss_down = unsafe { (GetAsyncKeyState(key_boss as i32) as u16 & 0x8000) != 0 };
+                    let is_inter_down = unsafe { (GetAsyncKeyState(key_inter as i32) as u16 & 0x8000) != 0 };
+
+                    if is_box_down && !prev_box_down {
+                        let _ = cmd_tx_clone.send(AppCommand::ToggleBoxTimer);
+                    }
+                    if is_boss_down && !prev_boss_down {
+                        let _ = cmd_tx_clone.send(AppCommand::ToggleMidBoss);
+                    }
+                    if is_inter_down && !prev_interactive_down {
+                        let current_override = manual_clone.load(Ordering::Relaxed);
+                        manual_clone.store(!current_override, Ordering::Relaxed);
+                    }
+
+                    prev_box_down = is_box_down;
+                    prev_boss_down = is_boss_down;
+                    prev_interactive_down = is_inter_down;
+                } else {
+                    // Reset key states when Deadlock loses focus
+                    prev_box_down = false;
+                    prev_boss_down = false;
+                    prev_interactive_down = false;
+                }
+
+                thread::sleep(Duration::from_millis(30));
             }
         })
         .expect("Failed to spawn focus manager thread");
