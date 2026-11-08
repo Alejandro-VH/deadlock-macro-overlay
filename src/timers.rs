@@ -1,19 +1,23 @@
 /// Event types tracked by the Deadlock macro overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EventKind {
-    BridgeBuffs,
-    SoulUrn,
-    SinnersSacrifice,
-    MidBossSpawn,  // Initial appearance at 10:00
-    MidBossRespawn, // Respawn countdown after kill
+    T1Camps,          // Initial boxes, golden statues, and small jungle unlock at 02:00
+    BridgeBuffs,      // Bridge powerup runes at 05:00 and every 5:00 thereafter
+    T2Camps,          // Medium jungle unlock at 07:00
+    SinnersSacrifice, // Sinner's Sacrifice slot machines & hard jungle (T3) unlock at 08:00
+    SoulUrn,          // Soul Urn spawn at 10:00 and every 5:00 thereafter
+    MidBossSpawn,     // Mid Boss initial appearance in the central pit at 10:00
+    MidBossRespawn,   // Dynamic Mid Boss respawn countdown following a kill (F9)
 }
 
 impl EventKind {
     pub fn display_name(&self) -> &'static str {
         match self {
+            EventKind::T1Camps => "Cajas & Jungla T1",
             EventKind::BridgeBuffs => "Bridge Buffs",
+            EventKind::T2Camps => "Jungla T2 (Mediana)",
+            EventKind::SinnersSacrifice => "Sinner's & Jungla T3",
             EventKind::SoulUrn => "Soul Urn",
-            EventKind::SinnersSacrifice => "Sinner's Sacrifice",
             EventKind::MidBossSpawn => "Mid Boss Spawn",
             EventKind::MidBossRespawn => "Mid Boss Respawn",
         }
@@ -103,7 +107,15 @@ impl MacroScheduler {
     pub fn calculate_events(&self, current_seconds: u32) -> Vec<MacroEvent> {
         let mut events = Vec::new();
 
-        // 1. Bridge Buffs (First spawn at 300s / 05:00, then every 300s: 10:00, 15:00, 20:00...)
+        // 1. Cajas y Jungla T1 (Hito inicial a los 120s / 02:00, visible hasta 10s después)
+        if current_seconds <= 130 {
+            events.push(MacroEvent {
+                kind: EventKind::T1Camps,
+                target_time: 120,
+            });
+        }
+
+        // 2. Bridge Buffs (Primer spawn a los 300s / 05:00, luego cada 300s: 10:00, 15:00, 20:00...)
         let bridge_target = if current_seconds < 300 {
             300
         } else {
@@ -119,7 +131,23 @@ impl MacroScheduler {
             target_time: bridge_target,
         });
 
-        // 2. Soul Urn (First spawn at 600s / 10:00, then every 300s: 15:00, 20:00, 25:00...)
+        // 3. Jungla T2 / Mediana (Hito inicial a los 420s / 07:00, visible hasta 10s después)
+        if current_seconds <= 430 {
+            events.push(MacroEvent {
+                kind: EventKind::T2Camps,
+                target_time: 420,
+            });
+        }
+
+        // 4. Sinner's Sacrifice y Jungla T3 (Hito a los 480s / 08:00, visible hasta 10s después)
+        if current_seconds <= 490 {
+            events.push(MacroEvent {
+                kind: EventKind::SinnersSacrifice,
+                target_time: 480,
+            });
+        }
+
+        // 5. Soul Urn (Primer spawn a los 600s / 10:00, luego cada 300s: 15:00, 20:00, 25:00...)
         let urn_target = if current_seconds < 600 {
             600
         } else {
@@ -135,15 +163,7 @@ impl MacroScheduler {
             target_time: urn_target,
         });
 
-        // 3. Sinner's Sacrifice (Single initial event at 480s / 08:00, vanishes after 10s grace period)
-        if current_seconds <= 490 {
-            events.push(MacroEvent {
-                kind: EventKind::SinnersSacrifice,
-                target_time: 480,
-            });
-        }
-
-        // 4. Mid Boss Initial Spawn at 10:00 (600s) if never killed yet
+        // 6. Mid Boss Spawn Inicial a los 10:00 (600s) si nunca ha muerto aún
         if self.midboss.kills == 0 && current_seconds <= 610 {
             events.push(MacroEvent {
                 kind: EventKind::MidBossSpawn,
@@ -151,7 +171,7 @@ impl MacroScheduler {
             });
         }
 
-        // 5. Mid Boss Respawn (if manually recorded with F9 and actively counting down)
+        // 7. Mid Boss Respawn tras muerte (si fue registrado con F9)
         if let Some(respawn) = self.midboss.get_active_respawn(current_seconds) {
             events.push(MacroEvent {
                 kind: EventKind::MidBossRespawn,
@@ -159,7 +179,7 @@ impl MacroScheduler {
             });
         }
 
-        // Sort events chronologically by target_time
+        // Ordenar cronológicamente por tiempo objetivo
         events.sort_by_key(|e| e.target_time);
         events
     }

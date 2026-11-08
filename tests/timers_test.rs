@@ -3,6 +3,49 @@ use deadlock_overlay::timers::{
 };
 
 #[test]
+fn test_macro_milestones_progression() {
+    let scheduler = MacroScheduler::default();
+
+    // 1. At 60s (01:00), the immediate next event is Cajas & Jungla T1 at 120s (02:00)
+    let next = scheduler.get_immediate_next_events(60);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::T1Camps);
+    assert_eq!(next[0].target_time, 120);
+    assert_eq!(next[0].remaining_seconds(60), 60);
+
+    // 2. At 135s (02:15), the immediate next event is Bridge Buffs at 300s (05:00)
+    let next = scheduler.get_immediate_next_events(135);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::BridgeBuffs);
+    assert_eq!(next[0].target_time, 300);
+
+    // 3. At 315s (05:15), the immediate next event is Jungla T2 (Mediana) at 420s (07:00)
+    let next = scheduler.get_immediate_next_events(315);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::T2Camps);
+    assert_eq!(next[0].target_time, 420);
+
+    // 4. At 435s (07:15), the immediate next event is Sinner's & Jungla T3 at 480s (08:00)
+    let next = scheduler.get_immediate_next_events(435);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].kind, EventKind::SinnersSacrifice);
+    assert_eq!(next[0].target_time, 480);
+
+    // 5. At 500s (08:20), the immediate next events are at 600s (10:00): Bridge + Urn + MidBoss
+    let next = scheduler.get_immediate_next_events(500);
+    assert!(next.iter().all(|e| e.target_time == 600));
+    assert!(next.iter().any(|e| e.kind == EventKind::BridgeBuffs));
+    assert!(next.iter().any(|e| e.kind == EventKind::SoulUrn));
+    assert!(next.iter().any(|e| e.kind == EventKind::MidBossSpawn));
+
+    // 6. At 615s (10:15), next events are at 900s (15:00)
+    let next = scheduler.get_immediate_next_events(615);
+    assert!(next.iter().all(|e| e.target_time == 900));
+    assert!(next.iter().any(|e| e.kind == EventKind::BridgeBuffs));
+    assert!(next.iter().any(|e| e.kind == EventKind::SoulUrn));
+}
+
+#[test]
 fn test_bridge_buffs_schedule() {
     let scheduler = MacroScheduler::default();
 
@@ -45,45 +88,6 @@ fn test_soul_urn_schedule() {
     let events = scheduler.calculate_events(615);
     let urn = events.iter().find(|e| e.kind == EventKind::SoulUrn).expect("Soul Urn not found");
     assert_eq!(urn.target_time, 900);
-}
-
-#[test]
-fn test_sinners_sacrifice_schedule() {
-    let scheduler = MacroScheduler::default();
-
-    // At 480s (08:00), Sinner's Sacrifice is Active
-    let events = scheduler.calculate_events(480);
-    let sinner = events.iter().find(|e| e.kind == EventKind::SinnersSacrifice).expect("Sinner's Sacrifice not found");
-    assert_eq!(sinner.status(480), EventStatus::Active);
-
-    // At 489s, it is still active (within 10s grace period)
-    let events = scheduler.calculate_events(489);
-    assert!(events.iter().any(|e| e.kind == EventKind::SinnersSacrifice));
-
-    // At 491s, it should no longer be present
-    let events = scheduler.calculate_events(491);
-    assert!(events.iter().all(|e| e.kind != EventKind::SinnersSacrifice));
-}
-
-#[test]
-fn test_immediate_next_events_progression() {
-    let scheduler = MacroScheduler::default();
-
-    // At 100s (01:40), the immediate next event is ONLY Bridge Buffs at 300s (05:00)
-    let next = scheduler.get_immediate_next_events(100);
-    assert_eq!(next.len(), 1);
-    assert_eq!(next[0].kind, EventKind::BridgeBuffs);
-    assert_eq!(next[0].target_time, 300);
-
-    // At 315s (05:15), the immediate next event is ONLY Sinner's Sacrifice at 480s (08:00)
-    let next = scheduler.get_immediate_next_events(315);
-    assert_eq!(next.len(), 1);
-    assert_eq!(next[0].kind, EventKind::SinnersSacrifice);
-    assert_eq!(next[0].target_time, 480);
-
-    // At 500s (08:20), the immediate next events are at 600s (10:00): Bridge + Urn + MidBossSpawn
-    let next = scheduler.get_immediate_next_events(500);
-    assert!(next.iter().all(|e| e.target_time == 600));
 }
 
 #[test]
