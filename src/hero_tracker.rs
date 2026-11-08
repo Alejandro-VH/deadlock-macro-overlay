@@ -47,6 +47,13 @@ pub static HERO_ROSTER: &[(&str, &str)] = &[
     ("hero_mirage", "Mirage"),
     ("hero_pocket", "Pocket"),
     ("hero_lash", "Lash"),
+    ("hero_tengu", "Ivy"),
+    ("hero_archer", "Grey Talon"),
+    ("hero_kali", "Calico"),
+    ("hero_calico", "Calico"),
+    ("hero_astro", "Holliday"),
+    ("hero_slork", "Slork"),
+    ("hero_wrecker", "Wrecker"),
 ];
 
 pub fn get_all_heroes() -> &'static [(&'static str, &'static str)] {
@@ -75,8 +82,8 @@ pub fn map_internal_hero_id(internal_id: &str) -> String {
         .join(" ")
 }
 
+/// Strictly parses local client hero spawn lines (ignoring remote bots and enemies).
 pub fn parse_hero_from_log_line(line: &str) -> Option<String> {
-    // Pattern 1: Attempting to spawn hero hero_<name>
     if let Some(pos) = line.find("Attempting to spawn hero ") {
         let remainder = &line[pos + "Attempting to spawn hero ".len()..];
         let token = remainder.split_whitespace().next().unwrap_or("");
@@ -86,18 +93,14 @@ pub fn parse_hero_from_log_line(line: &str) -> Option<String> {
         }
     }
 
-    // Pattern 2: [Server] Loaded hero <id>/hero_<name>
-    if let Some(pos) = line.find("[Server] Loaded hero ") {
-        let remainder = &line[pos + "[Server] Loaded hero ".len()..];
-        let token = remainder.split_whitespace().next().unwrap_or("");
-        let hero_part = token.split('/').last().unwrap_or(token);
-        let hero_id = hero_part.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
-        if !hero_id.is_empty() {
-            return Some(hero_id.to_string());
-        }
-    }
-
     None
+}
+
+/// Detects match disconnection or game quit events from Citadel logs.
+pub fn is_match_end_line(line: &str) -> bool {
+    line.contains("Destroying the match data watcher")
+        || line.contains("Disconnecting from server")
+        || line.contains("GameShutdown()")
 }
 
 pub struct HeroTracker {
@@ -145,10 +148,23 @@ impl HeroTracker {
         self.current_hero.source = HeroSelectionSource::Auto;
     }
 
-    pub fn poll_log(&mut self) -> Option<String> {
-        let path = self.log_path.as_ref()?;
-        let file = File::open(path).ok()?;
-        let metadata = file.metadata().ok()?;
+    pub fn reset_hero_state(&mut self) {
+        if self.current_hero.source == HeroSelectionSource::Auto {
+            self.current_hero = HeroInfo::default();
+        }
+    }
+
+    /// Polls log for both new hero spawns and match lifecycle termination.
+    pub fn poll_log_events(&mut self) -> (Option<String>, bool) {
+        let Some(path) = self.log_path.as_ref() else {
+            return (None, false);
+        };
+        let Ok(file) = File::open(path) else {
+            return (None, false);
+        };
+        let Ok(metadata) = file.metadata() else {
+            return (None, false);
+        };
         let file_len = metadata.len();
         let created = metadata.created().ok();
 
@@ -161,9 +177,12 @@ impl HeroTracker {
         }
 
         let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::Start(self.last_offset)).ok()?;
+        if reader.seek(SeekFrom::Start(self.last_offset)).is_err() {
+            return (None, false);
+        }
 
         let mut latest_detected = None;
+        let mut match_ended = false;
         let mut line = String::new();
         let mut current_pos = self.last_offset;
 
@@ -178,6 +197,10 @@ impl HeroTracker {
             }
 
             current_pos += bytes_read as u64;
+
+            if is_match_end_line(&line) {
+                match_ended = true;
+            }
 
             if let Some(hero_id) = parse_hero_from_log_line(&line) {
                 let display = map_internal_hero_id(&hero_id);
@@ -194,7 +217,16 @@ impl HeroTracker {
         }
 
         self.last_offset = current_pos;
-        latest_detected
+
+        if match_ended {
+            self.reset_hero_state();
+        }
+
+        (latest_detected, match_ended)
+    }
+
+    pub fn poll_log(&mut self) -> Option<String> {
+        self.poll_log_events().0
     }
 
     pub fn find_default_deadlock_log_path() -> Option<PathBuf> {

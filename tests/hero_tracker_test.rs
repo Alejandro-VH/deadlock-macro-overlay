@@ -1,6 +1,6 @@
 use deadlock_overlay::hero_tracker::{
-    get_all_heroes, map_internal_hero_id, parse_hero_from_log_line, HeroSelectionSource,
-    HeroTracker,
+    get_all_heroes, is_match_end_line, map_internal_hero_id, parse_hero_from_log_line,
+    HeroSelectionSource, HeroTracker,
 };
 use std::fs::File;
 use std::io::Write;
@@ -13,6 +13,11 @@ fn test_map_internal_hero_id_known() {
     assert_eq!(map_internal_hero_id("hero_atlas"), "Abrams");
     assert_eq!(map_internal_hero_id("hero_werewolf"), "Shiv");
     assert_eq!(map_internal_hero_id("hero_ghost"), "Lady Geist");
+    assert_eq!(map_internal_hero_id("hero_tengu"), "Ivy");
+    assert_eq!(map_internal_hero_id("hero_archer"), "Grey Talon");
+    assert_eq!(map_internal_hero_id("hero_mirage"), "Mirage");
+    assert_eq!(map_internal_hero_id("hero_kali"), "Calico");
+    assert_eq!(map_internal_hero_id("hero_astro"), "Holliday");
 }
 
 #[test]
@@ -31,15 +36,24 @@ fn test_parse_hero_from_spawn_line() {
 }
 
 #[test]
-fn test_parse_hero_from_loaded_server_line() {
+fn test_parse_hero_ignores_server_loaded_lines() {
+    // [Server] Loaded hero lines contain bots and other players; must be ignored
     let line = "10/31 23:44:10 [Server] Loaded hero 2838/hero_hornet";
-    assert_eq!(parse_hero_from_log_line(line), Some("hero_hornet".to_string()));
+    assert_eq!(parse_hero_from_log_line(line), None);
 }
 
 #[test]
 fn test_parse_hero_from_irrelevant_line() {
     let line = "10/31 23:44:10 C_BasePlayerPawn::OnPostPredictionError() visual prediction distance 0.000";
     assert_eq!(parse_hero_from_log_line(line), None);
+}
+
+#[test]
+fn test_is_match_end_line() {
+    assert!(is_match_end_line("10/31 23:44:24 Destroying the match data watcher"));
+    assert!(is_match_end_line("10/31 23:44:24 [HostStateManager] Disconnecting from server"));
+    assert!(is_match_end_line("10/31 23:44:24 CPlayerVoiceListener::GameShutdown()"));
+    assert!(!is_match_end_line("10/31 23:44:09 Attempting to spawn hero hero_hornet (3)"));
 }
 
 #[test]
