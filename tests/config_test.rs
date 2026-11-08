@@ -138,3 +138,36 @@ fn test_config_extended_settings_defaults_and_persistence() {
 
     let _ = fs::remove_file(test_path);
 }
+
+
+#[test]
+fn test_resolve_config_path_uses_appdata_when_present() {
+    use std::ffi::OsStr;
+    let fake_appdata = OsStr::new(r"C:\Users\TestUser\AppData\Roaming");
+    let path = OverlayConfig::resolve_config_path_from_env(Some(fake_appdata));
+    assert_eq!(
+        path,
+        std::path::PathBuf::from(r"C:\Users\TestUser\AppData\Roaming\DeadlockMacroOverlay\deadlock_overlay.cfg")
+    );
+}
+
+#[test]
+fn test_resolve_config_path_falls_back_when_appdata_missing() {
+    let path = OverlayConfig::resolve_config_path_from_env(None);
+    assert_eq!(path, std::path::PathBuf::from("deadlock_overlay.cfg"));
+}
+
+#[test]
+fn test_load_or_create_generates_file_in_nested_directory_on_first_run() {
+    let temp_dir = std::env::temp_dir().join("dtmo_test_first_run");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    let cfg_path = temp_dir.join("DeadlockMacroOverlay").join("deadlock_overlay.cfg");
+
+    assert!(!cfg_path.exists());
+    let cfg = OverlayConfig::load_or_create(&cfg_path, 2560, 1440);
+    assert!(cfg_path.exists(), "Config file must be auto-created on first launch");
+    assert_eq!(cfg.win_x, 2560 - 300);
+    assert_eq!(cfg.roi_x, (2560 / 2) - 60);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

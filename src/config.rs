@@ -1,6 +1,10 @@
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub const APP_DIR_NAME: &str = "DeadlockMacroOverlay";
+pub const CONFIG_FILE_NAME: &str = "deadlock_overlay.cfg";
 
 /// Coordinates and dimensions for overlay positioning, OCR sampling, and preferences.
 #[derive(Debug, Clone, PartialEq)]
@@ -160,6 +164,40 @@ impl OverlayConfig {
         }
 
         config
+    }
+
+    /// Resolves configuration path relative to the provided APPDATA directory, or falls back to local file.
+    pub fn resolve_config_path_from_env(appdata_var: Option<&OsStr>) -> PathBuf {
+        match appdata_var {
+            Some(dir) if !dir.is_empty() => {
+                PathBuf::from(dir).join(APP_DIR_NAME).join(CONFIG_FILE_NAME)
+            }
+            _ => PathBuf::from(CONFIG_FILE_NAME),
+        }
+    }
+
+    /// Resolves standard configuration path in %APPDATA%\DeadlockMacroOverlay\deadlock_overlay.cfg.
+    pub fn resolve_config_path() -> PathBuf {
+        Self::resolve_config_path_from_env(std::env::var_os("APPDATA").as_deref())
+    }
+
+    /// Loads existing configuration from disk or automatically initializes default settings on first run.
+    pub fn load_or_create<P: AsRef<Path>>(
+        path: P,
+        fallback_width: i32,
+        fallback_height: i32,
+    ) -> Self {
+        let p = path.as_ref();
+        if p.exists() {
+            Self::load_from_file(p, fallback_width, fallback_height)
+        } else {
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let config = Self::default_for_resolution(fallback_width, fallback_height);
+            let _ = config.save_to_file(p);
+            config
+        }
     }
 }
 
