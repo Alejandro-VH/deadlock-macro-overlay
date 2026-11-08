@@ -241,8 +241,8 @@ fn main() -> eframe::Result<()> {
                         let _ = cmd_tx_clone.send(AppCommand::ToggleMidBoss);
                     }
                     if is_inter_down && !prev_interactive_down {
-                        let current_override = manual_clone.load(Ordering::Relaxed);
-                        manual_clone.store(!current_override, Ordering::Relaxed);
+                        let _ = cmd_tx_clone.send(AppCommand::ResetMatch);
+                        let _ = cmd_tx_clone.send(AppCommand::ReloadConfig);
                     }
 
                     prev_box_down = is_box_down;
@@ -305,7 +305,7 @@ fn main() -> eframe::Result<()> {
             .with_resizable(false)
             .with_maximize_button(false)
             .with_minimize_button(false)
-            .with_inner_size([240.0, 175.0])
+            .with_inner_size([260.0, 185.0])
             .with_position([config.win_x as f32, config.win_y as f32]),
         ..Default::default()
     };
@@ -352,6 +352,10 @@ struct AppWrapper {
 }
 
 impl eframe::App for AppWrapper {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         while let Ok(cmd) = self.cmd_rx.try_recv() {
             match cmd {
