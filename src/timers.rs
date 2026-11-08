@@ -85,6 +85,25 @@ impl MacroEvent {
     }
 }
 
+/// A collection of simultaneous macro events occurring at the exact same match time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MilestoneGroup {
+    pub target_time: u32,
+    pub remaining_seconds: i32,
+    pub status: EventStatus,
+    pub events: Vec<MacroEvent>,
+}
+
+impl MilestoneGroup {
+    pub fn progress(&self, current_seconds: u32) -> f32 {
+        if let Some(first) = self.events.first() {
+            first.progress(current_seconds)
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Tracks manual breakable box / golden statue farm routes (180s cycle).
 #[derive(Debug, Clone, Default)]
 pub struct BoxRouteTracker {
@@ -234,6 +253,11 @@ impl MacroScheduler {
             kind: EventKind::BridgeBuffs,
             target_time: bridge_target,
         });
+        // Include subsequent recurring cycle for horizon projection
+        events.push(MacroEvent {
+            kind: EventKind::BridgeBuffs,
+            target_time: bridge_target + 300,
+        });
 
         // 4. Jungla T2 / Mediana (Hito inicial a los 420s / 07:00, visible hasta 10s después)
         if current_seconds <= 430 {
@@ -266,6 +290,11 @@ impl MacroScheduler {
             kind: EventKind::SoulUrn,
             target_time: urn_target,
         });
+        // Include subsequent recurring cycle for horizon projection
+        events.push(MacroEvent {
+            kind: EventKind::SoulUrn,
+            target_time: urn_target + 300,
+        });
 
         // 7. Mid Boss Spawn Inicial a los 10:00 (600s) si nunca ha muerto aún
         if self.midboss.kills == 0 && current_seconds <= 610 {
@@ -275,17 +304,74 @@ impl MacroScheduler {
             });
         }
 
-        // 8. Mid Boss Respawn tras muerte (si fue registrado con F9)
-        if let Some(respawn) = self.midboss.get_active_respawn(current_seconds) {
-            events.push(MacroEvent {
-                kind: EventKind::MidBossRespawn,
-                target_time: respawn,
-            });
-        }
-
         // Ordenar cronológicamente por tiempo objetivo
         events.sort_by_key(|e| e.target_time);
         events
+    }
+
+    /// Returns both the immediate milestone group and the subsequent milestone group.
+    /// Each group contains all events sharing that specific target time.
+    pub fn get_grouped_horizons(
+        &self,
+        current_seconds: u32,
+    ) -> (Option<MilestoneGroup>, Option<MilestoneGroup>) {
+        let all_events = self.calculate_events(current_seconds);
+        if let Some(first) = all_events.first() {
+            let earliest_time = first.target_time;
+            let immediate_events: Vec<MacroEvent> = all_events
+                .iter()
+                .filter(|e| e.target_time == earliest_time)
+                .cloned()
+                .collect();
+
+            let immediate_status = immediate_events
+                .first()
+                .map(|e| e.status(current_seconds))
+                .unwrap_or(EventStatus::Upcoming);
+
+            let immediate_remaining = first.remaining_seconds(current_seconds);
+
+            let immediate_group = MilestoneGroup {
+                target_time: earliest_time,
+                remaining_seconds: immediate_remaining,
+                status: immediate_status,
+                events: immediate_events,
+            };
+
+            let next_target = all_events
+                .iter()
+                .find(|e| e.target_time > earliest_time)
+                .map(|e| e.target_time);
+
+            let next_group = next_target.map(|nxt_time| {
+                let nxt_events: Vec<MacroEvent> = all_events
+                    .iter()
+                    .filter(|e| e.target_time == nxt_time)
+                    .cloned()
+                    .collect();
+
+                let nxt_status = nxt_events
+                    .first()
+                    .map(|e| e.status(current_seconds))
+                    .unwrap_or(EventStatus::Upcoming);
+
+                let nxt_remaining = nxt_events
+                    .first()
+                    .map(|e| e.remaining_seconds(current_seconds))
+                    .unwrap_or(0);
+
+                MilestoneGroup {
+                    target_time: nxt_time,
+                    remaining_seconds: nxt_remaining,
+                    status: nxt_status,
+                    events: nxt_events,
+                }
+            });
+
+            (Some(immediate_group), next_group)
+        } else {
+            (None, None)
+        }
     }
 
     /// Returns only the immediate next active or upcoming event(s) sharing the earliest target time.

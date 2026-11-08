@@ -278,3 +278,46 @@ fn test_dual_horizon_events() {
     assert_eq!(next_event.kind, EventKind::T2Camps);
     assert_eq!(next_event.target_time, 420);
 }
+
+
+#[test]
+fn test_grouped_horizons_simultaneous_events() {
+    let scheduler = MacroScheduler::default();
+
+    // At 579s (09:39), 21s before 10:00 (600s)
+    let (immediate, next) = scheduler.get_grouped_horizons(579);
+
+    assert!(immediate.is_some(), "Immediate group must exist at 09:39");
+    let imm = immediate.unwrap();
+    assert_eq!(imm.target_time, 600);
+    assert_eq!(imm.remaining_seconds, 21);
+    assert_eq!(imm.status, EventStatus::Warning);
+    // At 10:00 we have Bridge Buffs, Soul Urn, and Mid Boss Spawn
+    assert_eq!(imm.events.len(), 3);
+    assert!(imm.events.iter().any(|e| e.kind == EventKind::BridgeBuffs));
+    assert!(imm.events.iter().any(|e| e.kind == EventKind::SoulUrn));
+    assert!(imm.events.iter().any(|e| e.kind == EventKind::MidBossSpawn));
+
+    // Next milestone is at 15:00 (900s) with Bridge Buffs AND Soul Urn
+    assert!(next.is_some(), "Next group must exist");
+    let nxt = next.unwrap();
+    assert_eq!(nxt.target_time, 900);
+    assert_eq!(nxt.remaining_seconds, 321);
+    assert_eq!(nxt.events.len(), 2, "Next milestone at 15:00 must include both Bridge Buffs and Soul Urn");
+    assert!(nxt.events.iter().any(|e| e.kind == EventKind::BridgeBuffs));
+    assert!(nxt.events.iter().any(|e| e.kind == EventKind::SoulUrn));
+}
+
+#[test]
+fn test_midboss_respawn_excluded_from_global_schedule() {
+    let mut scheduler = MacroScheduler::default();
+    scheduler.midboss.record_kill(650); // Mid Boss killed at 10:50, respawns at 1070 (17:50)
+
+    let (immediate, next) = scheduler.get_grouped_horizons(700);
+    if let Some(imm) = immediate {
+        assert!(!imm.events.iter().any(|e| e.kind == EventKind::MidBossRespawn));
+    }
+    if let Some(nxt) = next {
+        assert!(!nxt.events.iter().any(|e| e.kind == EventKind::MidBossRespawn));
+    }
+}
