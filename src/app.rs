@@ -296,7 +296,7 @@ impl eframe::App for DeadlockApp {
 
         // Dynamic geometry: Clean HUD layout sizing
         let target_size = if self.config_menu_open && (is_interactive || !is_game_running) {
-            Vec2::new(260.0, 240.0)
+            Vec2::new(260.0, 265.0)
         } else if !is_game_running {
             Vec2::new(260.0, 68.0)
         } else {
@@ -614,13 +614,34 @@ impl eframe::App for DeadlockApp {
                             .size(10.0)
                             .color(Color32::from_rgb(203, 213, 225)),
                     );
-                    for (scale_val, label) in &[(1.0_f32, "100%"), (1.15_f32, "115%"), (1.30_f32, "130%")] {
-                        let selected = (self.config.hud_scale - scale_val).abs() < 0.01;
+                    for (scale_val, label) in &[
+                        (0.80_f32, "80%"),
+                        (1.00_f32, "100%"),
+                        (1.20_f32, "120%"),
+                    ] {
+                        let selected = (self.config.hud_scale - scale_val).abs() < 0.05;
                         if ui.selectable_label(selected, *label).clicked() {
                             self.config.hud_scale = *scale_val;
                             self.current_window_size = None;
                             let _ = self.config.save_to_file(&self.config_path);
                         }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let mut scale = self.config.hud_scale;
+                    let slider = ui.add(
+                        egui::Slider::new(&mut scale, 0.60..=1.40)
+                            .step_by(0.05)
+                            .show_value(false),
+                    );
+                    if slider.changed() {
+                        self.config.hud_scale = scale;
+                        self.current_window_size = None;
+                    }
+                    if slider.drag_stopped() {
+                        let _ = self.config.save_to_file(&self.config_path);
                     }
                 });
 
@@ -639,6 +660,15 @@ impl eframe::App for DeadlockApp {
                         }
                     }
                 });
+
+                // Minimalist Mode Toggle
+                if ui
+                    .checkbox(&mut self.config.minimal_hud, "Modo Minimalista")
+                    .changed()
+                {
+                    self.current_window_size = None;
+                    let _ = self.config.save_to_file(&self.config_path);
+                }
 
                 ui.add_space(2.0);
                 ui.label(
