@@ -23,12 +23,21 @@ pub struct OverlayConfig {
     pub key_box_timer: u16,
     pub key_midboss: u16,
     pub key_interactive: u16,
+    pub minimal_hud: bool,
 }
 
 impl OverlayConfig {
-    /// Computes default geometry relative to the primary display resolution.
-    pub fn default_for_resolution(screen_width: i32, screen_height: i32) -> Self {
+    /// Computes default geometry and adaptive scale relative to primary display resolution and DPI scaling.
+    pub fn default_for_resolution_and_dpi(
+        screen_width: i32,
+        screen_height: i32,
+        dpi_scale: f32,
+    ) -> Self {
         let _ = screen_height;
+        let ppp = dpi_scale.max(0.5);
+        let logical_w = screen_width as f32 / ppp;
+        let hud_scale = if logical_w <= 1536.0 { 0.80 } else { 1.00 };
+
         Self {
             win_x: screen_width - 300,
             win_y: 100,
@@ -39,12 +48,18 @@ impl OverlayConfig {
             last_hero: String::new(),
             is_muted: false,
             alert_30s_sound: true,
-            hud_scale: 1.0,
+            hud_scale,
             bg_opacity: 0.92,
             key_box_timer: 0x77,   // VK_F8
             key_midboss: 0x78,     // VK_F9
             key_interactive: 0x79, // VK_F10
+            minimal_hud: false,
         }
+    }
+
+    /// Computes default geometry relative to the primary display resolution (at 1.0x DPI scale).
+    pub fn default_for_resolution(screen_width: i32, screen_height: i32) -> Self {
+        Self::default_for_resolution_and_dpi(screen_width, screen_height, 1.0)
     }
 
     /// Serializes configuration values to a plain-text key-value file.
@@ -66,6 +81,7 @@ impl OverlayConfig {
         writeln!(file, "key_box_timer={}", key_to_display_name(self.key_box_timer))?;
         writeln!(file, "key_midboss={}", key_to_display_name(self.key_midboss))?;
         writeln!(file, "key_interactive={}", key_to_display_name(self.key_interactive))?;
+        writeln!(file, "minimal_hud={}", self.minimal_hud)?;
         file.flush()
     }
 
@@ -158,6 +174,11 @@ impl OverlayConfig {
                             config.key_interactive = vk;
                         }
                     }
+                    "minimal_hud" => {
+                        if let Ok(v) = val.parse::<bool>() {
+                            config.minimal_hud = v;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -206,11 +227,12 @@ impl OverlayConfig {
         (self.win_x as f32 / ppp, self.win_y as f32 / ppp)
     }
 
-    /// Loads existing configuration from disk or automatically initializes default settings on first run.
-    pub fn load_or_create<P: AsRef<Path>>(
+    /// Loads existing configuration from disk or automatically initializes default settings with DPI adaptiveness on first run.
+    pub fn load_or_create_with_dpi<P: AsRef<Path>>(
         path: P,
         fallback_width: i32,
         fallback_height: i32,
+        dpi_scale: f32,
     ) -> Self {
         let p = path.as_ref();
         if p.exists() {
@@ -226,11 +248,20 @@ impl OverlayConfig {
             if let Some(parent) = p.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let mut config = Self::default_for_resolution(fallback_width, fallback_height);
+            let mut config = Self::default_for_resolution_and_dpi(fallback_width, fallback_height, dpi_scale);
             config.clamp_to_screen(fallback_width, fallback_height);
             let _ = config.save_to_file(p);
             config
         }
+    }
+
+    /// Loads existing configuration from disk or automatically initializes default settings on first run.
+    pub fn load_or_create<P: AsRef<Path>>(
+        path: P,
+        fallback_width: i32,
+        fallback_height: i32,
+    ) -> Self {
+        Self::load_or_create_with_dpi(path, fallback_width, fallback_height, 1.0)
     }
 }
 

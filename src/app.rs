@@ -296,16 +296,25 @@ impl eframe::App for DeadlockApp {
 
         // Dynamic geometry: Clean HUD layout sizing
         let target_size = if self.config_menu_open && (is_interactive || !is_game_running) {
-            Vec2::new(260.0, 220.0)
+            Vec2::new(260.0, 265.0)
         } else if !is_game_running {
             Vec2::new(260.0, 68.0)
         } else {
             let event_count = immediate_group.as_ref().map_or(1, |g| g.events.len().max(1));
-            let next_count = next_group.as_ref().map_or(0, |g| g.events.len());
-            let has_next = next_group.is_some();
-            let next_h = if has_next { 20.0 + (next_count as f32 * 16.0) } else { 0.0 };
-            let h = 60.0 + (event_count as f32 * 18.0) + next_h;
-            Vec2::new(260.0, h.clamp(115.0, 280.0))
+            let show_next = !self.config.minimal_hud && next_group.is_some();
+            let next_count = if show_next {
+                next_group.as_ref().map_or(0, |g| g.events.len())
+            } else {
+                0
+            };
+            let next_h = if show_next {
+                24.0 + (next_count as f32 * 18.0)
+            } else {
+                0.0
+            };
+            // 46px base (header + micro progress) + immediate events + next events + 12px safety bottom margin
+            let h = 46.0 + 18.0 + (event_count as f32 * 18.0) + next_h + 12.0;
+            Vec2::new(260.0, h.clamp(72.0, 320.0))
         };
 
         let ppp = ctx.pixels_per_point();
@@ -605,13 +614,34 @@ impl eframe::App for DeadlockApp {
                             .size(10.0)
                             .color(Color32::from_rgb(203, 213, 225)),
                     );
-                    for (scale_val, label) in &[(1.0_f32, "100%"), (1.15_f32, "115%"), (1.30_f32, "130%")] {
-                        let selected = (self.config.hud_scale - scale_val).abs() < 0.01;
+                    for (scale_val, label) in &[
+                        (0.80_f32, "80%"),
+                        (1.00_f32, "100%"),
+                        (1.20_f32, "120%"),
+                    ] {
+                        let selected = (self.config.hud_scale - scale_val).abs() < 0.05;
                         if ui.selectable_label(selected, *label).clicked() {
                             self.config.hud_scale = *scale_val;
                             self.current_window_size = None;
                             let _ = self.config.save_to_file(&self.config_path);
                         }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let mut scale = self.config.hud_scale;
+                    let slider = ui.add(
+                        egui::Slider::new(&mut scale, 0.60..=1.40)
+                            .step_by(0.05)
+                            .show_value(false),
+                    );
+                    if slider.changed() {
+                        self.config.hud_scale = scale;
+                        self.current_window_size = None;
+                    }
+                    if slider.drag_stopped() {
+                        let _ = self.config.save_to_file(&self.config_path);
                     }
                 });
 
@@ -630,6 +660,15 @@ impl eframe::App for DeadlockApp {
                         }
                     }
                 });
+
+                // Minimalist Mode Toggle
+                if ui
+                    .checkbox(&mut self.config.minimal_hud, "Modo Minimalista")
+                    .changed()
+                {
+                    self.current_window_size = None;
+                    let _ = self.config.save_to_file(&self.config_path);
+                }
 
                 ui.add_space(2.0);
                 ui.label(
@@ -718,25 +757,27 @@ impl eframe::App for DeadlockApp {
                         );
                     }
 
-                    // Subsequent Milestone Horizon Preview with independent bullet items
-                    if let Some(ref next) = next_group {
-                        ui.add_space(3.0);
-                        let nxt_target_str = format_time_mmss(next.target_time);
+                    // Subsequent Milestone Horizon Preview with independent bullet items (suppressed in minimal HUD mode)
+                    if !self.config.minimal_hud {
+                        if let Some(ref next) = next_group {
+                            ui.add_space(3.0);
+                            let nxt_target_str = format_time_mmss(next.target_time);
 
-                        ui.label(
-                            RichText::new(format!("Siguiente: {}", nxt_target_str))
-                                .size(9.5)
-                                .color(Color32::from_rgb(148, 163, 184)),
-                        );
-                        for event in &next.events {
-                            ui.horizontal(|ui| {
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new(format!("• {}", event.kind.display_name()))
-                                        .size(9.5)
-                                        .color(Color32::from_rgb(148, 163, 184)),
-                                );
-                            });
+                            ui.label(
+                                RichText::new(format!("Siguiente: {}", nxt_target_str))
+                                    .size(9.5)
+                                    .color(Color32::from_rgb(148, 163, 184)),
+                            );
+                            for event in &next.events {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        RichText::new(format!("• {}", event.kind.display_name()))
+                                            .size(9.5)
+                                            .color(Color32::from_rgb(148, 163, 184)),
+                                    );
+                                });
+                            }
                         }
                     }
                 }
