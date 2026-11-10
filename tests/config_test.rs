@@ -206,3 +206,45 @@ fn test_logical_position_compensates_for_dpi_scaling() {
     assert!(((lx * 1.25) - 1620.0).abs() < 0.1);
     assert!(((ly * 1.25) - 100.0).abs() < 0.1);
 }
+
+#[test]
+fn test_default_config_for_laptop_dpi_selects_compact_scale() {
+    // 1920x1080 at 125% DPI -> logical width = 1536
+    let cfg = OverlayConfig::default_for_resolution_and_dpi(1920, 1080, 1.25);
+    assert!((cfg.hud_scale - 0.80).abs() < 0.001);
+    assert!(!cfg.minimal_hud);
+}
+
+#[test]
+fn test_default_config_for_desktop_selects_standard_scale() {
+    // 1920x1080 at 100% DPI -> logical width = 1920
+    let cfg = OverlayConfig::default_for_resolution_and_dpi(1920, 1080, 1.0);
+    assert!((cfg.hud_scale - 1.00).abs() < 0.001);
+}
+
+#[test]
+fn test_minimal_hud_round_trip_persistence() {
+    let mut test_path = std::env::temp_dir();
+    test_path.push("test_deadlock_config_minimal_hud.cfg");
+
+    let mut cfg = OverlayConfig::default_for_resolution(1920, 1080);
+    cfg.minimal_hud = true;
+    cfg.save_to_file(&test_path).expect("Failed to save config");
+
+    let loaded = OverlayConfig::load_from_file(&test_path, 1920, 1080);
+    assert!(loaded.minimal_hud);
+
+    let _ = std::fs::remove_file(test_path);
+}
+
+#[test]
+fn test_load_or_create_with_laptop_dpi_sets_compact_scale() {
+    let temp_dir = std::env::temp_dir().join("dtmo_test_laptop_dpi");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    let cfg_path = temp_dir.join("deadlock_overlay.cfg");
+
+    let cfg = OverlayConfig::load_or_create_with_dpi(&cfg_path, 1920, 1080, 1.25);
+    assert!((cfg.hud_scale - 0.80).abs() < 0.001);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
