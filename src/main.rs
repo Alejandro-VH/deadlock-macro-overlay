@@ -135,15 +135,27 @@ fn main() -> eframe::Result<()> {
         None => return Ok(()),
     };
 
-    // 1. Detect screen resolution for default layout
+    // 1. Detect screen resolution and primary DPI for default layout and scaling
     let (screen_w, screen_h) = unsafe {
         let w = GetSystemMetrics(SM_CXSCREEN);
         let h = GetSystemMetrics(SM_CYSCREEN);
         (if w > 0 { w } else { 1920 }, if h > 0 { h } else { 1080 })
     };
 
+    let dpi_scale = unsafe {
+        let hdc = GetDC(HWND(std::ptr::null_mut()));
+        let dpi = if !hdc.0.is_null() {
+            let d = GetDeviceCaps(hdc, LOGPIXELSX);
+            let _ = ReleaseDC(HWND(std::ptr::null_mut()), hdc);
+            d
+        } else {
+            96
+        };
+        if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 }
+    };
+
     let config_path = OverlayConfig::resolve_config_path();
-    let config = OverlayConfig::load_or_create(&config_path, screen_w, screen_h);
+    let config = OverlayConfig::load_or_create_with_dpi(&config_path, screen_w, screen_h, dpi_scale);
     let interactive_flag = Arc::new(AtomicBool::new(false)); // Start in ghost (click-through) mode
     let manual_override_flag = Arc::new(AtomicBool::new(false));
     let game_running_flag = Arc::new(AtomicBool::new(false));
@@ -303,17 +315,6 @@ fn main() -> eframe::Result<()> {
         .expect("Failed to spawn OCR thread");
 
     // 6. Native eframe window configuration (convert physical win_x/win_y to logical points using primary DPI)
-    let dpi_scale = unsafe {
-        let hdc = GetDC(HWND(std::ptr::null_mut()));
-        let dpi = if !hdc.0.is_null() {
-            let d = GetDeviceCaps(hdc, LOGPIXELSX);
-            let _ = ReleaseDC(HWND(std::ptr::null_mut()), hdc);
-            d
-        } else {
-            96
-        };
-        if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 }
-    };
     let (init_lx, init_ly) = config.logical_position(dpi_scale);
 
     let native_options = eframe::NativeOptions {

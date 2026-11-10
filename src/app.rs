@@ -296,16 +296,25 @@ impl eframe::App for DeadlockApp {
 
         // Dynamic geometry: Clean HUD layout sizing
         let target_size = if self.config_menu_open && (is_interactive || !is_game_running) {
-            Vec2::new(260.0, 220.0)
+            Vec2::new(260.0, 240.0)
         } else if !is_game_running {
             Vec2::new(260.0, 68.0)
         } else {
             let event_count = immediate_group.as_ref().map_or(1, |g| g.events.len().max(1));
-            let next_count = next_group.as_ref().map_or(0, |g| g.events.len());
-            let has_next = next_group.is_some();
-            let next_h = if has_next { 20.0 + (next_count as f32 * 16.0) } else { 0.0 };
-            let h = 60.0 + (event_count as f32 * 18.0) + next_h;
-            Vec2::new(260.0, h.clamp(115.0, 280.0))
+            let show_next = !self.config.minimal_hud && next_group.is_some();
+            let next_count = if show_next {
+                next_group.as_ref().map_or(0, |g| g.events.len())
+            } else {
+                0
+            };
+            let next_h = if show_next {
+                24.0 + (next_count as f32 * 18.0)
+            } else {
+                0.0
+            };
+            // 46px base (header + micro progress) + immediate events + next events + 12px safety bottom margin
+            let h = 46.0 + 18.0 + (event_count as f32 * 18.0) + next_h + 12.0;
+            Vec2::new(260.0, h.clamp(72.0, 320.0))
         };
 
         let ppp = ctx.pixels_per_point();
@@ -718,25 +727,27 @@ impl eframe::App for DeadlockApp {
                         );
                     }
 
-                    // Subsequent Milestone Horizon Preview with independent bullet items
-                    if let Some(ref next) = next_group {
-                        ui.add_space(3.0);
-                        let nxt_target_str = format_time_mmss(next.target_time);
+                    // Subsequent Milestone Horizon Preview with independent bullet items (suppressed in minimal HUD mode)
+                    if !self.config.minimal_hud {
+                        if let Some(ref next) = next_group {
+                            ui.add_space(3.0);
+                            let nxt_target_str = format_time_mmss(next.target_time);
 
-                        ui.label(
-                            RichText::new(format!("Siguiente: {}", nxt_target_str))
-                                .size(9.5)
-                                .color(Color32::from_rgb(148, 163, 184)),
-                        );
-                        for event in &next.events {
-                            ui.horizontal(|ui| {
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new(format!("• {}", event.kind.display_name()))
-                                        .size(9.5)
-                                        .color(Color32::from_rgb(148, 163, 184)),
-                                );
-                            });
+                            ui.label(
+                                RichText::new(format!("Siguiente: {}", nxt_target_str))
+                                    .size(9.5)
+                                    .color(Color32::from_rgb(148, 163, 184)),
+                            );
+                            for event in &next.events {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        RichText::new(format!("• {}", event.kind.display_name()))
+                                            .size(9.5)
+                                            .color(Color32::from_rgb(148, 163, 184)),
+                                    );
+                                });
+                            }
                         }
                     }
                 }
