@@ -562,6 +562,8 @@ pub struct ClockFilter {
     is_active: bool,
     match_state: MatchState,
     inactivity_ticks: u32,
+    is_paused: bool,
+    stale_reads: u32,
 }
 
 impl ClockFilter {
@@ -588,6 +590,10 @@ impl ClockFilter {
         self.inactivity_ticks = 0;
     }
 
+    pub fn is_paused(&self) -> bool {
+        self.is_paused
+    }
+
     /// Feeds raw OCR reading. Returns true if the clock was updated directly from OCR.
     pub fn feed_ocr_reading(&mut self, raw_time: Option<u32>) -> bool {
         if let Some(raw) = raw_time {
@@ -601,11 +607,24 @@ impl ClockFilter {
                 self.current_seconds = raw;
                 self.pending_candidate = None;
                 self.consecutive_reads = 0;
+                self.is_paused = false;
+                self.stale_reads = 0;
                 return true;
             }
 
             let prev = self.current_seconds;
             let diff = (raw as i32 - prev as i32).abs();
+
+            if raw == prev {
+                self.stale_reads += 1;
+                if self.stale_reads >= 5 {
+                    self.is_paused = true;
+                }
+            } else {
+                self.stale_reads = 0;
+                self.is_paused = false;
+            }
+
             if diff <= 3 {
                 self.current_seconds = raw;
                 self.pending_candidate = None;
@@ -636,7 +655,7 @@ impl ClockFilter {
 
     /// Increments the local clock by 1 second during OCR occlusions.
     pub fn tick_second(&mut self) {
-        if self.is_active {
+        if self.is_active && !self.is_paused {
             self.current_seconds = self.current_seconds.saturating_add(1);
         }
     }
@@ -669,6 +688,8 @@ impl ClockFilter {
         self.is_active = false;
         self.match_state = MatchState::Waiting;
         self.inactivity_ticks = 0;
+        self.is_paused = false;
+        self.stale_reads = 0;
     }
 }
 

@@ -24,6 +24,8 @@ pub struct OverlayConfig {
     pub key_midboss: u16,
     pub key_interactive: u16,
     pub minimal_hud: bool,
+    pub key_passthrough: u16,
+    pub custom_log_path: Option<String>,
 }
 
 impl OverlayConfig {
@@ -54,6 +56,8 @@ impl OverlayConfig {
             key_midboss: 0x78,     // VK_F9
             key_interactive: 0x79, // VK_F10
             minimal_hud: false,
+            key_passthrough: 0x09, // VK_TAB
+            custom_log_path: None,
         }
     }
 
@@ -82,6 +86,12 @@ impl OverlayConfig {
         writeln!(file, "key_midboss={}", key_to_display_name(self.key_midboss))?;
         writeln!(file, "key_interactive={}", key_to_display_name(self.key_interactive))?;
         writeln!(file, "minimal_hud={}", self.minimal_hud)?;
+        writeln!(file, "key_passthrough={}", key_to_display_name(self.key_passthrough))?;
+        if let Some(ref custom_path) = self.custom_log_path {
+            if !custom_path.trim().is_empty() {
+                writeln!(file, "log_path={}", custom_path.trim())?;
+            }
+        }
         file.flush()
     }
 
@@ -177,6 +187,17 @@ impl OverlayConfig {
                     "minimal_hud" => {
                         if let Ok(v) = val.parse::<bool>() {
                             config.minimal_hud = v;
+                        }
+                    }
+                    "key_passthrough" => {
+                        if let Some(vk) = display_name_to_key(val) {
+                            config.key_passthrough = vk;
+                        }
+                    }
+                    "log_path" => {
+                        let trimmed = val.trim();
+                        if !trimmed.is_empty() {
+                            config.custom_log_path = Some(trimmed.to_string());
                         }
                     }
                     _ => {}

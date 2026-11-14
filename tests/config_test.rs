@@ -248,3 +248,26 @@ fn test_load_or_create_with_laptop_dpi_sets_compact_scale() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_config_passthrough_key_and_custom_log_path() {
+    let mut test_path = std::env::temp_dir();
+    test_path.push("test_deadlock_config_robustness.cfg");
+
+    let mut cfg = OverlayConfig::default_for_resolution(1920, 1080);
+    assert_eq!(cfg.key_passthrough, 0x09); // Default Tab
+    assert_eq!(cfg.custom_log_path, None);
+
+    cfg.key_passthrough = 0x14; // CapsLock
+    cfg.custom_log_path = Some(r"F:\Games\Steam\steamapps\common\Deadlock\game\citadel\console.log".to_string());
+    cfg.save_to_file(&test_path).expect("Failed to save config with passthrough and log path");
+
+    let loaded = OverlayConfig::load_from_file(&test_path, 1920, 1080);
+    assert_eq!(loaded.key_passthrough, 0x14);
+    assert_eq!(
+        loaded.custom_log_path,
+        Some(r"F:\Games\Steam\steamapps\common\Deadlock\game\citadel\console.log".to_string())
+    );
+
+    let _ = std::fs::remove_file(test_path);
+}
