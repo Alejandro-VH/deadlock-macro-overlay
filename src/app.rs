@@ -253,6 +253,13 @@ impl eframe::App for DeadlockApp {
         // 1. Purge Tab key events from egui to completely eliminate focus cycling / outline box jumping
         ctx.input_mut(|i| {
             i.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Tab, .. }));
+            i.raw.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Tab, .. }));
+            i.keys_down.remove(&egui::Key::Tab);
+        });
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
         });
 
         // 2. Disable native keyboard zoom (Ctrl +, Ctrl -, Ctrl 0)
@@ -260,13 +267,15 @@ impl eframe::App for DeadlockApp {
             o.zoom_with_keyboard = false;
         });
 
-        // 3. Disable text selection and widget focus expansion rings; enforce transparent backdrop
+        // 3. Disable text selection, widget focus expansion rings, and focus strokes; enforce transparent backdrop
         ctx.style_mut(|s| {
             s.interaction.selectable_labels = false;
             s.visuals.window_fill = Color32::TRANSPARENT;
             s.visuals.panel_fill = Color32::TRANSPARENT;
             s.visuals.widgets.active.expansion = 0.0;
             s.visuals.widgets.hovered.expansion = 0.0;
+            s.visuals.selection.stroke = Stroke::NONE;
+            s.visuals.selection.bg_fill = Color32::TRANSPARENT;
         });
 
         // 4. Apply configured HUD scale via zoom factor to preserve native OS DPI scaling
