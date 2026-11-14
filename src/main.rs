@@ -11,10 +11,10 @@ use std::time::Duration;
 use windows::core::w;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
 use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSX};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_TAB};
+use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
-    GetWindowTextW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST,
+    GetWindowTextW, IsWindow, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST,
     SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SWP_SHOWWINDOW, WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
@@ -106,23 +106,44 @@ unsafe extern "system" fn enum_check_deadlock(hwnd: HWND, lparam: LPARAM) -> BOO
                 || title_str.starts_with("Deadlock ")
                 || title_str.contains("project8"))
         {
-            let found = lparam.0 as *mut bool;
-            *found = true;
+            let found = lparam.0 as *mut HWND;
+            *found = hwnd;
             return BOOL(0);
         }
     }
     BOOL(1)
 }
 
-/// 100% passive Win32 query checking if the Deadlock game window currently exists.
-fn is_deadlock_game_running() -> bool {
-    unsafe {
-        let mut found = false;
-        let _ = EnumWindows(
-            Some(enum_check_deadlock),
-            LPARAM(&mut found as *mut bool as isize),
-        );
-        found
+/// Cached detector checking if Deadlock is running without enumerating all system windows every tick.
+struct DeadlockWindowDetector {
+    cached_hwnd: Option<HWND>,
+}
+
+impl DeadlockWindowDetector {
+    fn new() -> Self {
+        Self { cached_hwnd: None }
+    }
+
+    fn is_running(&mut self) -> bool {
+        unsafe {
+            if let Some(hwnd) = self.cached_hwnd {
+                if IsWindow(hwnd).as_bool() {
+                    return true;
+                }
+                self.cached_hwnd = None;
+            }
+            let mut found_hwnd = HWND(std::ptr::null_mut());
+            let _ = EnumWindows(
+                Some(enum_check_deadlock),
+                LPARAM(&mut found_hwnd as *mut HWND as isize),
+            );
+            if !found_hwnd.0.is_null() {
+                self.cached_hwnd = Some(found_hwnd);
+                true
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -226,15 +247,19 @@ fn main() -> eframe::Result<()> {
                     }
                 }
 
-                // In-Game Tab Passthrough:
-                // When in Deadlock and holding Tab, the game unlocks the mouse.
+                // In-Game Passthrough:
+                // When in Deadlock and holding the configured passthrough key (default Tab), the game unlocks the mouse.
                 // We automatically lift WS_EX_TRANSPARENT so the overlay becomes clickable!
                 let in_deadlock = is_deadlock_game_foreground(cached_hwnd);
-                let is_tab_held = in_deadlock && unsafe {
-                    (GetAsyncKeyState(VK_TAB.0 as i32) as u16 & 0x8000) != 0
+                let key_passthrough = {
+                    let cfg = config_clone.read().unwrap();
+                    cfg.key_passthrough
+                };
+                let is_passthrough_held = in_deadlock && unsafe {
+                    (GetAsyncKeyState(key_passthrough as i32) as u16 & 0x8000) != 0
                 };
                 let manual_force = manual_clone.load(Ordering::Relaxed);
-                let is_interactive = manual_force || is_tab_held || !in_deadlock;
+                let is_interactive = manual_force || is_passthrough_held || !in_deadlock;
 
                 flag_clone.store(is_interactive, Ordering::Relaxed);
                 if !cached_hwnd.0.is_null() {
@@ -286,9 +311,10 @@ fn main() -> eframe::Result<()> {
         .name("ocr_reader".into())
         .spawn(move || {
             let ocr = ScreenOcr::new();
+            let mut detector = DeadlockWindowDetector::new();
 
             loop {
-                let is_running = is_deadlock_game_running();
+                let is_running = detector.is_running();
                 game_running_ocr_clone.store(is_running, Ordering::Relaxed);
 
                 if !is_running {

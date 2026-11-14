@@ -14,13 +14,18 @@ use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 pub enum RebindTarget {
     BoxTimer,
     Interactive,
+    Passthrough,
 }
 
-pub fn poll_key_for_rebinding() -> Option<u16> {
+pub fn poll_key_for_rebinding(allow_tab: bool) -> Option<u16> {
     unsafe {
         // Esc cancels rebinding
         if (GetAsyncKeyState(0x1B) as u16 & 0x8000) != 0 {
             return Some(0);
+        }
+        // Tab (0x09) permitted when specifically rebinding passthrough key
+        if allow_tab && (GetAsyncKeyState(0x09) as u16 & 0x8000) != 0 {
+            return Some(0x09);
         }
         // Mouse side buttons
         if (GetAsyncKeyState(0x05) as u16 & 0x8000) != 0 {
@@ -77,6 +82,7 @@ pub struct DeadlockApp {
     pub config_menu_open: bool,
     pub rebinding: Option<RebindTarget>,
     pub last_box_rem: Option<u32>,
+    pub last_raw_ocr: Option<u32>,
     pub last_log_poll_instant: Instant,
     pub current_window_size: Option<Vec2>,
     pub last_applied_scale: f32,
@@ -95,7 +101,8 @@ impl DeadlockApp {
         game_running: Arc<AtomicBool>,
         ocr_rx: Receiver<Option<u32>>,
     ) -> Self {
-        let mut hero_tracker = HeroTracker::new(None);
+        let custom_log = config.custom_log_path.as_ref().map(std::path::PathBuf::from);
+        let mut hero_tracker = HeroTracker::new(custom_log);
         if !config.last_hero.is_empty() && config.last_hero != "Auto" {
             hero_tracker.set_manual_hero(&config.last_hero);
         }
@@ -118,6 +125,7 @@ impl DeadlockApp {
             config_menu_open: false,
             rebinding: None,
             last_box_rem: None,
+            last_raw_ocr: None,
             last_log_poll_instant: Instant::now(),
             current_window_size: None,
             last_applied_scale: initial_scale,
@@ -137,8 +145,8 @@ impl DeadlockApp {
             latest_reading = msg;
             received_msg = true;
         }
-
         if received_msg {
+            self.last_raw_ocr = latest_reading;
             if let Some(reading) = latest_reading {
                 if self.clock.feed_ocr_reading(Some(reading)) {
                     self.last_tick_instant = Instant::now();
@@ -225,6 +233,8 @@ impl DeadlockApp {
         self.screen_w = screen_w;
         self.screen_h = screen_h;
         self.config = OverlayConfig::load_or_create(&self.config_path, screen_w, screen_h);
+        let custom_log = self.config.custom_log_path.as_ref().map(std::path::PathBuf::from);
+        self.hero_tracker = HeroTracker::new(custom_log);
         if !self.config.last_hero.is_empty() && self.config.last_hero != "Auto" {
             self.hero_tracker.set_manual_hero(&self.config.last_hero);
         }
@@ -273,7 +283,8 @@ impl eframe::App for DeadlockApp {
 
         // Process key rebinding if active
         if let Some(target) = self.rebinding {
-            if let Some(vk) = poll_key_for_rebinding() {
+            let allow_tab = target == RebindTarget::Passthrough;
+            if let Some(vk) = poll_key_for_rebinding(allow_tab) {
                 if vk == 0 {
                     // Esc pressed: cancel rebinding
                     self.rebinding = None;
@@ -281,6 +292,7 @@ impl eframe::App for DeadlockApp {
                     match target {
                         RebindTarget::BoxTimer => self.config.key_box_timer = vk,
                         RebindTarget::Interactive => self.config.key_interactive = vk,
+                        RebindTarget::Passthrough => self.config.key_passthrough = vk,
                     }
                     let _ = self.config.save_to_file(&self.config_path);
                     self.rebinding = None;
@@ -293,6 +305,7 @@ impl eframe::App for DeadlockApp {
         } else {
             // Game not running: drain OCR messages and keep clock reset
             while self.ocr_rx.try_recv().is_ok() {}
+            self.last_raw_ocr = None;
             self.clock.reset();
             self.triggered_alerts.clear();
             self.triggered_warnings.clear();
@@ -446,6 +459,15 @@ impl eframe::App for DeadlockApp {
                 if clock_resp.drag_started_by(egui::PointerButton::Primary) {
                     self.was_dragged = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+
+                if is_game_running && self.clock.is_paused() {
+                    ui.label(
+                        RichText::new("[PAUSA]")
+                            .strong()
+                            .size(10.0)
+                            .color(Color32::from_rgb(251, 146, 60)),
+                    );
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -613,6 +635,45 @@ impl eframe::App for DeadlockApp {
                     if btn.clicked() {
                         self.rebinding = Some(RebindTarget::Interactive);
                     }
+                });
+
+                // Rebind Scoreboard / Passthrough Hotkey
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Liberar Cursor:")
+                            .size(10.0)
+                            .color(Color32::from_rgb(203, 213, 225)),
+                    );
+                    let btn_text = if self.rebinding == Some(RebindTarget::Passthrough) {
+                        "Presiona tecla...".to_string()
+                    } else {
+                        key_to_display_name(self.config.key_passthrough)
+                    };
+                    let btn = ui.add(egui::Button::new(RichText::new(btn_text).size(9.5)));
+                    if btn.clicked() {
+                        self.rebinding = Some(RebindTarget::Passthrough);
+                    }
+                });
+
+                // OCR Diagnostic Status
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estado OCR:")
+                            .size(10.0)
+                            .color(Color32::from_rgb(203, 213, 225)),
+                    );
+                    let (status_text, status_color) = if !is_game_running {
+                        ("Inactivo (esperando juego)".to_string(), Color32::from_rgb(148, 163, 184))
+                    } else if let Some(raw) = self.last_raw_ocr {
+                        (format!("Leyendo: {}", format_time_mmss(raw)), Color32::from_rgb(74, 222, 128))
+                    } else {
+                        ("Buscando reloj...".to_string(), Color32::from_rgb(251, 191, 36))
+                    };
+                    ui.label(
+                        RichText::new(status_text)
+                            .size(10.0)
+                            .color(status_color),
+                    );
                 });
 
                 ui.add_space(2.0);

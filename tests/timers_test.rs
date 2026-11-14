@@ -400,3 +400,44 @@ fn test_clock_filter_manual_reset_returns_to_waiting() {
     assert_eq!(clock.match_state(), MatchState::Waiting);
     assert_eq!(clock.current_seconds(), 0);
 }
+
+#[test]
+fn test_clock_filter_pause_detection_and_resume() {
+    let mut clock = ClockFilter::new();
+    assert!(!clock.is_active());
+    assert!(!clock.is_paused());
+
+    // 1. Initial activation at 120s
+    clock.feed_ocr_reading(Some(120));
+    assert!(clock.is_active());
+    assert_eq!(clock.current_seconds(), 120);
+    assert!(!clock.is_paused());
+
+    // 2. Normal progression (read 120 two more times, then 121)
+    clock.feed_ocr_reading(Some(120));
+    clock.feed_ocr_reading(Some(120));
+    assert!(!clock.is_paused());
+
+    clock.feed_ocr_reading(Some(121));
+    assert_eq!(clock.current_seconds(), 121);
+    assert!(!clock.is_paused());
+
+    // 3. Pause occurs at 121s: OCR reads 121 repeatedly 5+ times
+    for _ in 0..5 {
+        clock.feed_ocr_reading(Some(121));
+    }
+    assert!(clock.is_paused(), "Clock must detect match pause after 5 identical reads");
+
+    // 4. While paused, tick_second must not increment match time
+    clock.tick_second();
+    clock.tick_second();
+    assert_eq!(clock.current_seconds(), 121, "Paused clock must not drift forward with tick_second");
+
+    // 5. Match unpauses and advances to 122s
+    clock.feed_ocr_reading(Some(122));
+    assert!(!clock.is_paused(), "Clock must clear pause once OCR advances");
+    assert_eq!(clock.current_seconds(), 122);
+
+    clock.tick_second();
+    assert_eq!(clock.current_seconds(), 123, "Active unpaused clock must resume tick_second increment");
+}
