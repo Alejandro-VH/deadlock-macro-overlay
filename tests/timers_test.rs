@@ -355,3 +355,48 @@ fn test_midboss_respawn_excluded_from_global_schedule() {
         assert!(!nxt.events.iter().any(|e| e.kind == EventKind::MidBossRespawn));
     }
 }
+
+#[test]
+fn test_clock_filter_initial_state_is_waiting() {
+    use deadlock_overlay::timers::MatchState;
+    let clock = ClockFilter::new();
+    assert_eq!(clock.match_state(), MatchState::Waiting);
+    assert_eq!(clock.current_seconds(), 0);
+}
+
+#[test]
+fn test_clock_filter_transitions_to_in_match_on_valid_ocr() {
+    use deadlock_overlay::timers::MatchState;
+    let mut clock = ClockFilter::new();
+    clock.feed_ocr_reading(Some(45));
+    assert_eq!(clock.match_state(), MatchState::InMatch);
+    assert_eq!(clock.current_seconds(), 45);
+}
+
+#[test]
+fn test_clock_filter_watchdog_resets_after_ten_inactivity_ticks() {
+    use deadlock_overlay::timers::MatchState;
+    let mut clock = ClockFilter::new();
+    clock.feed_ocr_reading(Some(120));
+    assert_eq!(clock.match_state(), MatchState::InMatch);
+
+    for _ in 0..9 {
+        assert!(!clock.feed_inactivity_tick());
+        assert_eq!(clock.match_state(), MatchState::InMatch);
+    }
+
+    // 10th consecutive inactivity tick triggers reset to Waiting
+    assert!(clock.feed_inactivity_tick());
+    assert_eq!(clock.match_state(), MatchState::Waiting);
+    assert_eq!(clock.current_seconds(), 0);
+}
+
+#[test]
+fn test_clock_filter_manual_reset_returns_to_waiting() {
+    use deadlock_overlay::timers::MatchState;
+    let mut clock = ClockFilter::new();
+    clock.feed_ocr_reading(Some(60));
+    clock.reset();
+    assert_eq!(clock.match_state(), MatchState::Waiting);
+    assert_eq!(clock.current_seconds(), 0);
+}

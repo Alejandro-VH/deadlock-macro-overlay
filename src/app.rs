@@ -1,7 +1,7 @@
 use crate::audio::AudioNotifier;
 use crate::config::{key_to_display_name, OverlayConfig};
-use crate::hero_tracker::HeroTracker;
-use crate::timers::{format_time_mmss, ClockFilter, EventKind, EventStatus, MacroEvent, MacroScheduler};
+use crate::hero_tracker::{DetectedGameMode, HeroTracker};
+use crate::timers::{format_time_mmss, ClockFilter, EventKind, EventStatus, MacroEvent, MacroScheduler, MatchState};
 use eframe::egui::{self, Color32, Margin, RichText, Rounding, Stroke, Vec2};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -129,15 +129,26 @@ impl DeadlockApp {
         }
     }
 
-    /// Pulls latest OCR readings from background worker and advances local clock.
+    /// Pulls latest OCR readings from background worker, advances local clock, and manages inactivity watchdog.
     pub fn update_timing(&mut self) {
         let mut latest_reading = None;
+        let mut received_msg = false;
         while let Ok(msg) = self.ocr_rx.try_recv() {
-            latest_reading = Some(msg);
+            latest_reading = msg;
+            received_msg = true;
         }
-        if let Some(reading) = latest_reading {
-            if self.clock.feed_ocr_reading(reading) {
-                self.last_tick_instant = Instant::now();
+
+        if received_msg {
+            if let Some(reading) = latest_reading {
+                if self.clock.feed_ocr_reading(Some(reading)) {
+                    self.last_tick_instant = Instant::now();
+                }
+            } else {
+                // Background OCR sent None (no valid clock found in ROI)
+                if self.clock.feed_inactivity_tick() {
+                    self.triggered_alerts.clear();
+                    self.triggered_warnings.clear();
+                }
             }
         }
 
@@ -146,11 +157,27 @@ impl DeadlockApp {
             self.last_tick_instant = Instant::now();
         }
 
-        // Poll Deadlock console.log every 1 second for hero spawns and match disconnect
+        // Poll Deadlock console.log every 1 second for hero spawns, match disconnect, and game modes
         if self.last_log_poll_instant.elapsed() >= Duration::from_secs(1) {
-            let (_, match_ended) = self.hero_tracker.poll_log_events();
+            let (_, match_ended, mode) = self.hero_tracker.poll_log_events();
             if match_ended {
                 self.reset_match();
+            } else if let Some(m) = mode {
+                match m {
+                    DetectedGameMode::StreetBrawl => {
+                        self.clock.set_unsupported_mode("Street Brawl");
+                        self.triggered_alerts.clear();
+                        self.triggered_warnings.clear();
+                    }
+                    DetectedGameMode::Hideout => {
+                        self.reset_match();
+                    }
+                    DetectedGameMode::Standard6v6 => {
+                        if matches!(self.clock.match_state(), MatchState::UnsupportedMode(_)) {
+                            self.clock.reset();
+                        }
+                    }
+                }
             }
             self.last_log_poll_instant = Instant::now();
         }
@@ -272,9 +299,11 @@ impl eframe::App for DeadlockApp {
         }
 
         let current_time = self.clock.current_seconds();
+        let match_state = self.clock.match_state();
+        let in_active_match = is_game_running && match_state == MatchState::InMatch;
 
         // Check completion transitions for box route audio chime
-        if is_game_running {
+        if in_active_match {
             let box_rem = self.scheduler.boxes.get_remaining(current_time);
             if let Some(rem) = box_rem {
                 if rem == 0 && self.last_box_rem.is_some_and(|r| r > 0) {
@@ -284,7 +313,7 @@ impl eframe::App for DeadlockApp {
             self.last_box_rem = box_rem;
         }
 
-        let (immediate_group, next_group) = if is_game_running {
+        let (immediate_group, next_group) = if in_active_match {
             self.scheduler.get_grouped_horizons(current_time)
         } else {
             (None, None)
@@ -297,7 +326,7 @@ impl eframe::App for DeadlockApp {
         // Dynamic geometry: Clean HUD layout sizing
         let target_size = if self.config_menu_open && (is_interactive || !is_game_running) {
             Vec2::new(260.0, 265.0)
-        } else if !is_game_running {
+        } else if !is_game_running || match_state != MatchState::InMatch {
             Vec2::new(260.0, 68.0)
         } else {
             let event_count = immediate_group.as_ref().map_or(1, |g| g.events.len().max(1));
@@ -358,8 +387,8 @@ impl eframe::App for DeadlockApp {
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             ui.set_max_width(ui.available_width());
-            // 1. TOP MICRO PROGRESS BAR (2px) - Only visible when game is actively running
-            if is_game_running {
+            // 1. TOP MICRO PROGRESS BAR (2px) - Only visible when game is in an active match
+            if in_active_match {
                 let (bar_rect, _) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 2.0), egui::Sense::hover());
                 ui.painter().rect_filled(
@@ -390,18 +419,16 @@ impl eframe::App for DeadlockApp {
 
             // 2. HEADER ROW
             ui.horizontal(|ui| {
-                let clock_text = if !is_game_running {
-                    "--:--".to_string()
-                } else if self.clock.is_active() {
+                let clock_text = if in_active_match {
                     format_time_mmss(current_time)
                 } else {
                     "--:--".to_string()
                 };
 
-                let clock_color = if !is_game_running {
-                    Color32::from_rgb(100, 116, 139)
-                } else {
+                let clock_color = if in_active_match {
                     Color32::from_rgb(245, 158, 11)
+                } else {
+                    Color32::from_rgb(100, 116, 139)
                 };
 
                 let clock_resp = ui.add(
@@ -694,6 +721,52 @@ impl eframe::App for DeadlockApp {
                         ui.label(
                             RichText::new("En espera de Deadlock...")
                                 .size(11.0)
+                                .color(Color32::from_rgb(148, 163, 184)),
+                        );
+                    });
+                } else if match_state == MatchState::Waiting {
+                    // Deadlock running, waiting for match start
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(
+                            dot_rect.center(),
+                            3.0,
+                            Color32::from_rgb(72, 239, 128),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("Esperando partida...")
+                                .strong()
+                                .size(11.0)
+                                .color(Color32::from_rgb(226, 232, 240)),
+                        );
+                    });
+                } else if let MatchState::UnsupportedMode(ref mode_name) = match_state {
+                    // Non-standard mode detected (e.g. Street Brawl)
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(
+                            dot_rect.center(),
+                            3.0,
+                            Color32::from_rgb(251, 146, 60),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(format!("Modo {}", mode_name))
+                                .strong()
+                                .size(11.0)
+                                .color(Color32::from_rgb(226, 232, 240)),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_space(22.0);
+                        ui.label(
+                            RichText::new("Hitos macro no aplican a este modo")
+                                .size(9.5)
                                 .color(Color32::from_rgb(148, 163, 184)),
                         );
                     });

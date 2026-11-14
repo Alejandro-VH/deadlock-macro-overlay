@@ -539,6 +539,20 @@ impl MacroScheduler {
     }
 }
 
+/// Lifecycle state of the match session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatchState {
+    Waiting,
+    InMatch,
+    UnsupportedMode(String),
+}
+
+impl Default for MatchState {
+    fn default() -> Self {
+        Self::Waiting
+    }
+}
+
 /// Noise-filtering and drift-compensating match clock.
 #[derive(Debug, Clone, Default)]
 pub struct ClockFilter {
@@ -546,6 +560,8 @@ pub struct ClockFilter {
     pending_candidate: Option<u32>,
     consecutive_reads: u32,
     is_active: bool,
+    match_state: MatchState,
+    inactivity_ticks: u32,
 }
 
 impl ClockFilter {
@@ -561,9 +577,25 @@ impl ClockFilter {
         self.is_active
     }
 
+    pub fn match_state(&self) -> MatchState {
+        self.match_state.clone()
+    }
+
+    pub fn set_unsupported_mode(&mut self, mode_name: &str) {
+        self.match_state = MatchState::UnsupportedMode(mode_name.to_string());
+        self.is_active = false;
+        self.current_seconds = 0;
+        self.inactivity_ticks = 0;
+    }
+
     /// Feeds raw OCR reading. Returns true if the clock was updated directly from OCR.
     pub fn feed_ocr_reading(&mut self, raw_time: Option<u32>) -> bool {
         if let Some(raw) = raw_time {
+            self.inactivity_ticks = 0;
+            if self.match_state != MatchState::InMatch && !matches!(self.match_state, MatchState::UnsupportedMode(_)) {
+                self.match_state = MatchState::InMatch;
+            }
+
             if !self.is_active {
                 self.is_active = true;
                 self.current_seconds = raw;
@@ -617,11 +649,26 @@ impl ClockFilter {
         }
     }
 
+    /// Advances inactivity counter when no valid OCR reading is present.
+    /// Resets match back to Waiting state after 10 consecutive ticks.
+    pub fn feed_inactivity_tick(&mut self) -> bool {
+        if self.match_state == MatchState::InMatch {
+            self.inactivity_ticks = self.inactivity_ticks.saturating_add(1);
+            if self.inactivity_ticks >= 10 {
+                self.reset();
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn reset(&mut self) {
         self.current_seconds = 0;
         self.pending_candidate = None;
         self.consecutive_reads = 0;
         self.is_active = false;
+        self.match_state = MatchState::Waiting;
+        self.inactivity_ticks = 0;
     }
 }
 

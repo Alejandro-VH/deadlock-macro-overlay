@@ -1,6 +1,6 @@
 use deadlock_overlay::hero_tracker::{
-    get_all_heroes, is_match_end_line, map_internal_hero_id, parse_hero_from_log_line,
-    HeroSelectionSource, HeroTracker,
+    get_all_heroes, is_match_end_line, map_internal_hero_id, parse_game_mode_from_log_line,
+    parse_hero_from_log_line, DetectedGameMode, HeroSelectionSource, HeroTracker,
 };
 use std::fs::File;
 use std::io::Write;
@@ -272,11 +272,51 @@ fn test_poll_log_events_disconnect_then_spawn_preserves_new_hero() {
     }
 
     let mut tracker = HeroTracker::new(Some(log_file.clone()));
-    let (detected, match_ended) = tracker.poll_log_events();
+    let (detected, match_ended, _mode) = tracker.poll_log_events();
 
     assert_eq!(detected, Some("Ivy".to_string()));
     assert_eq!(tracker.get_hero().display_name, "Ivy");
     assert!(!match_ended, "Hero spawn after disconnect must cancel match_ended flag");
+
+    let _ = std::fs::remove_file(log_file);
+}
+
+#[test]
+fn test_parse_map_load_dl_midtown() {
+    let line = "Loading map \"dl_midtown\"";
+    assert_eq!(parse_game_mode_from_log_line(line), Some(DetectedGameMode::Standard6v6));
+}
+
+#[test]
+fn test_parse_map_load_dl_hideout() {
+    let line = "Loading map \"dl_hideout\"";
+    assert_eq!(parse_game_mode_from_log_line(line), Some(DetectedGameMode::Hideout));
+}
+
+#[test]
+fn test_parse_street_brawl_event() {
+    let line = "street_brawl_state_changed overrides identical base gameevent";
+    assert_eq!(parse_game_mode_from_log_line(line), Some(DetectedGameMode::StreetBrawl));
+}
+
+#[test]
+fn test_poll_log_events_reports_detected_game_mode() {
+    let dir = std::env::temp_dir().join("deadlock_test_log_mode");
+    let _ = std::fs::create_dir_all(&dir);
+    let log_file = dir.join("console.log");
+
+    {
+        let mut f = File::create(&log_file).unwrap();
+        writeln!(f, "Loading map \"dl_midtown\"").unwrap();
+        writeln!(f, "Attempting to spawn hero hero_atlas (1). GameState is 7").unwrap();
+    }
+
+    let mut tracker = HeroTracker::new(Some(log_file.clone()));
+    let (detected, match_ended, mode) = tracker.poll_log_events();
+
+    assert_eq!(detected, Some("Abrams".to_string()));
+    assert!(!match_ended);
+    assert_eq!(mode, Some(DetectedGameMode::Standard6v6));
 
     let _ = std::fs::remove_file(log_file);
 }

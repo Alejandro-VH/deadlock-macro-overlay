@@ -96,11 +96,33 @@ pub fn parse_hero_from_log_line(line: &str) -> Option<String> {
     None
 }
 
+/// Game mode detected from log stream markers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetectedGameMode {
+    Standard6v6,
+    Hideout,
+    StreetBrawl,
+}
+
+/// Parses map load and game mode events from Citadel console logs.
+pub fn parse_game_mode_from_log_line(line: &str) -> Option<DetectedGameMode> {
+    if line.contains("Loading map \"dl_midtown\"") || line.contains("Loading map \"street_test\"") {
+        Some(DetectedGameMode::Standard6v6)
+    } else if line.contains("Loading map \"dl_hideout\"") {
+        Some(DetectedGameMode::Hideout)
+    } else if line.contains("street_brawl") || line.contains("streetbrawl") {
+        Some(DetectedGameMode::StreetBrawl)
+    } else {
+        None
+    }
+}
+
 /// Detects match disconnection or game quit events from Citadel logs.
 pub fn is_match_end_line(line: &str) -> bool {
     line.contains("Destroying the match data watcher")
         || line.contains("Disconnecting from server")
         || line.contains("GameShutdown()")
+        || line.contains("Loading map \"dl_hideout\"")
 }
 
 pub struct HeroTracker {
@@ -154,16 +176,16 @@ impl HeroTracker {
         }
     }
 
-    /// Polls log for both new hero spawns and match lifecycle termination.
-    pub fn poll_log_events(&mut self) -> (Option<String>, bool) {
+    /// Polls log for hero spawns, match lifecycle termination, and game mode updates.
+    pub fn poll_log_events(&mut self) -> (Option<String>, bool, Option<DetectedGameMode>) {
         let Some(path) = self.log_path.as_ref() else {
-            return (None, false);
+            return (None, false, None);
         };
         let Ok(file) = File::open(path) else {
-            return (None, false);
+            return (None, false, None);
         };
         let Ok(metadata) = file.metadata() else {
-            return (None, false);
+            return (None, false, None);
         };
         let file_len = metadata.len();
         let created = metadata.created().ok();
@@ -178,11 +200,12 @@ impl HeroTracker {
 
         let mut reader = BufReader::new(file);
         if reader.seek(SeekFrom::Start(self.last_offset)).is_err() {
-            return (None, false);
+            return (None, false, None);
         }
 
         let mut latest_detected = None;
         let mut match_ended = false;
+        let mut detected_mode = None;
         let mut line = String::new();
         let mut current_pos = self.last_offset;
 
@@ -197,6 +220,15 @@ impl HeroTracker {
             }
 
             current_pos += bytes_read as u64;
+
+            if let Some(mode) = parse_game_mode_from_log_line(&line) {
+                detected_mode = Some(mode);
+                if mode == DetectedGameMode::Hideout {
+                    match_ended = true;
+                    self.reset_hero_state();
+                    latest_detected = None;
+                }
+            }
 
             if is_match_end_line(&line) {
                 match_ended = true;
@@ -225,7 +257,7 @@ impl HeroTracker {
             self.reset_hero_state();
         }
 
-        (latest_detected, match_ended)
+        (latest_detected, match_ended, detected_mode)
     }
 
     pub fn poll_log(&mut self) -> Option<String> {
